@@ -1,0 +1,198 @@
+---
+title: "Configure Neo4j for KolkataRail train route data"
+description: "Connect, seed, and maintain the Neo4j graph database backing KolkataRail's train route queries, crowd report storage, and via-station traversal."
+---
+
+KolkataRail's `crowdIntelligence` service uses Neo4j as its primary data store for train routes and crowd reports. A graph database is the right choice here because route queries require traversing chains of `Train → Station` relationships, and intermediate-station (via) searches need to match multiple `STOPS_AT` edges on the same train node in a single query.
+
+## Why Neo4j
+
+Route lookups, via-station filtering, and crowd aggregations are all expressed as Cypher pattern matches across connected nodes. A relational schema would require multi-level joins for every intermediate-station query; the graph model makes these patterns concise and fast.
+
+---
+
+## Graph model
+
+The database contains three node labels and one relationship type.
+
+```cypher
+// Train node — one per service
+(:Train {
+  number:      "37211",
+  line:        "Main Line",
+  origin:      "Sealdah",
+  destination: "Bangaon",
+  depart:      "06:10"
+})
+
+// Station node — one per stop name (shared across trains)
+(:Station {
+  name: "Dum Dum"
+})
+
+// STOPS_AT relationship — train → each stop in order
+(:Train)-[:STOPS_AT {
+  sequence: 3,
+  time:     "06:24",
+  line:     "Main Line"
+}]->(:Station)
+
+// CrowdReport node — one per user or seeded submission
+(:CrowdReport {
+  train_number: "37211",
+  crowd_level:  "RED",       // RED | YELLOW | GREEN
+  day_type:     "weekday",   // weekday | weekend
+  hour_bucket:  "08:00-09:00",
+  timestamp:    "2026-01-15T08:32:00"
+})
+```
+
+Typical query pattern used by the route search endpoint:
+
+```cypher
+// Direct route (source → destination)
+MATCH (tr:Train)-[s1:STOPS_AT]->(st1:Station),
+      (tr)-[s2:STOPS_AT]->(st2:Station)
+WHERE st1.name = $from AND st2.name = $to
+  AND s1.sequence < s2.sequence
+RETURN tr, s1, s2
+
+// Via-station route (source → via → destination)
+MATCH (tr:Train)-[s1:STOPS_AT]->(st1:Station),
+      (tr)-[s2:STOPS_AT]->(st2:Station),
+      (tr)-[s3:STOPS_AT]->(st3:Station)
+WHERE st1.name = $from AND st2.name = $via AND st3.name = $to
+  AND s1.sequence < s2.sequence AND s2.sequence < s3.sequence
+RETURN tr, s1, s2, s3
+```
+
+---
+
+## Indexes
+
+`seed_neo4j.py` creates the following indexes automatically on first run:
+
+```cypher
+CREATE INDEX train_number IF NOT EXISTS FOR (t:Train)       ON (t.number)
+CREATE INDEX train_line   IF NOT EXISTS FOR (t:Train)       ON (t.line)
+CREATE INDEX train_depart IF NOT EXISTS FOR (t:Train)       ON (t.depart)
+CREATE INDEX train_origin IF NOT EXISTS FOR (t:Train)       ON (t.origin)
+CREATE INDEX train_dest   IF NOT EXISTS FOR (t:Train)       ON (t.destination)
+CREATE INDEX station_name IF NOT EXISTS FOR (s:Station)     ON (s.name)
+CREATE INDEX crowd_train  IF NOT EXISTS FOR (c:CrowdReport) ON (c.train_number)
+CREATE INDEX crowd_day    IF NOT EXISTS FOR (c:CrowdReport) ON (c.day_type)
+CREATE INDEX crowd_hour   IF NOT EXISTS FOR (c:CrowdReport) ON (c.hour_bucket)
+CREATE INDEX crowd_ts     IF NOT EXISTS FOR (c:CrowdReport) ON (c.timestamp)
+```
+
+---
+
+## Connection setup
+
+Set the three required environment variables before starting the service:
+
+```ini .env (inside crowdIntelligence/)
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-neo4j-password
+```
+
+The driver is initialised at module load time in `crowdIntelligence/main.py`:
+
+```python
+driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+```
+
+See [Environment variables](/configuration/environment-variables) for the full variable reference.
+
+---
+
+## Startup connectivity check
+
+On every application startup, `crowdIntelligence` runs a lightweight ping to confirm the connection:
+
+```python
+@app.on_event("startup")
+def ping_neo4j():
+    try:
+        run_cypher("RETURN 1")
+        print("✅ Neo4j connected")
+    except Exception as e:
+        print(f"⚠️  Neo4j ping failed: {e}")
+```
+
+A successful ping prints `✅ Neo4j connected` to the console. A failure prints a warning but does **not** prevent the server from starting — endpoints that require Neo4j will return errors until the connection is restored.
+
+---
+
+## Seeding the database
+
+<Warning>
+You must seed Neo4j before the route and crowd endpoints return any data. The service starts without seeded data but all queries will return empty results.
+</Warning>
+
+`crowdIntelligence/seed_neo4j.py` seeds the full dataset in one pass:
+
+- **Train nodes** — loaded from `kolkata_trains.json`
+- **Station nodes** — auto-derived from each train's stop list
+- **`STOPS_AT` relationships** — one per stop, with `sequence` and `time` properties
+- **CrowdReport nodes** — 50,000 synthetic historical reports with realistic RED/YELLOW/GREEN distributions, peak-hour bias, and direction-aware weighting
+
+<Steps>
+  <Step title="Ensure .env is set">
+    Confirm `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` are present in `crowdIntelligence/.env` or your shell environment.
+  </Step>
+  <Step title="Run the seed script">
+    ```powershell
+    cd crowdIntelligence
+    python seed_neo4j.py
+    ```
+    The script prints progress as it creates Train nodes, Station nodes, `STOPS_AT` relationships, indexes, and CrowdReport nodes.
+  </Step>
+  <Step title="Verify in Neo4j Browser">
+    Open the Neo4j Browser at `http://localhost:7474` and run:
+    ```cypher
+    MATCH (t:Train) RETURN count(t)
+    MATCH (s:Station) RETURN count(s)
+    MATCH (c:CrowdReport) RETURN count(c)
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Retry logic
+
+All Cypher queries in `crowdIntelligence/main.py` go through a `run_cypher` wrapper that retries on transient Neo4j errors:
+
+```python
+def run_cypher(query, params=None, retries=3):
+    for attempt in range(retries):
+        try:
+            with driver.session() as session:
+                return list(session.run(query, params or {}))
+        except (SessionExpired, ServiceUnavailable):
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)   # 1s, 2s before final attempt
+                driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            else:
+                raise
+```
+
+On a `SessionExpired` or `ServiceUnavailable` exception the wrapper waits with exponential backoff (1 second before retry 2, 2 seconds before retry 3) and re-creates the driver before each retry. Any other exception propagates immediately.
+
+---
+
+## Troubleshooting
+
+<CardGroup cols={1}>
+  <Card title="Neo4j connection fails at startup" icon="triangle-exclamation">
+    Confirm all three variables — `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` — are set correctly and that the Neo4j instance is running and reachable. The default bolt port is `7687`; check that no firewall or port mapping is blocking it.
+  </Card>
+  <Card title="Route searches return empty results" icon="magnifying-glass">
+    The database likely has not been seeded. Run `python seed_neo4j.py` from the `crowdIntelligence/` directory.
+  </Card>
+  <Card title="Root portal reports backend not running" icon="server">
+    Verify that `crowdIntelligence` is started on port `8000` and that the root portal on port `5000` can reach it. The portal proxies `/api/*` and `/sim/*` to `http://localhost:8000`.
+  </Card>
+</CardGroup>

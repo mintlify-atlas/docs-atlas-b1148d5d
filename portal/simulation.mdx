@@ -1,0 +1,120 @@
+---
+title: 'Train simulation GPS view and route display'
+description: 'Use the live crowd simulation to track GPS commuter positions, visualise compartment crowd levels, and view station density across Kolkata suburban lines.'
+---
+
+The simulation interface is a GPS-based crowd tracking tool that lets multiple users simultaneously share their real-time location with the CrowdIntelligence backend. The backend maps each GPS coordinate to the nearest suburban railway station using the haversine formula, assigns the user to one of nine train compartments (S1–S9) based on relative position, and broadcasts the aggregated state to all connected clients. The page re-polls this state every three seconds and renders it on a live Leaflet map.
+
+## Accessing the simulation
+
+The simulation page is served from two locations:
+
+| URL | Source |
+|---|---|
+| `http://localhost:5000/simulation.html` | Portal server (port 5000) proxies the static file directly from the project root |
+| `http://localhost:8000/simulation` | CrowdIntelligence service (port 8000) serves the same file via its own `/simulation` route |
+
+Both URLs render identically. The JavaScript inside the page always targets **port 8000** for its API calls (`/sim/ping`, `/sim/state`, `/sim/reset`), regardless of which URL was used to open it.
+
+<Info>
+The portal proxies `/sim/*` requests to port 8000, so if you loaded the page via the portal URL (`localhost:5000`) and your browser sends API calls to `localhost:8000`, those calls go directly to the CrowdIntelligence service — not through the portal proxy. This is by design; the page uses `window.location.hostname:8000` as its API base.
+</Info>
+
+## Starting a tracking session
+
+<Steps>
+  <Step title="Open the simulation page">
+    Navigate to `http://localhost:5000/simulation.html` (or the direct port 8000 URL). You will see a setup card with a name input and a Leaflet map centred on Kolkata (22.5726°N, 88.3639°E).
+  </Step>
+
+  <Step title="Enter your name and enable location">
+    Type a display name (for example, "Nayan" or "Priya") and click **Enable Location & Start**. The page requests the browser's Geolocation API. If GPS is available, coordinates update automatically. If GPS is blocked (common on phones over plain HTTP), a warning appears in the debug log — tap anywhere on the map to set your position manually instead.
+  </Step>
+
+  <Step title="Monitor the live state">
+    Once tracking starts, the page sends a `/sim/ping` POST every 4 seconds with your latitude, longitude, and display name. A debug log in the interface shows the outcome of each ping: the resolved station name, assigned compartment, and total connected users. The map and all panels refresh from `/sim/state` every 3 seconds.
+  </Step>
+
+  <Step title="Stop or reset">
+    Click **Stop** to halt GPS watching and cancel all timers. Click **Reset All** to call `/sim/reset`, which clears every user from the server-side state so you can start a fresh session.
+  </Step>
+</Steps>
+
+## Interface panels
+
+### Leaflet map
+
+The map renders two marker types:
+
+- **User markers** — 28 × 28 px coloured circles with the compartment number (S1–S9 shorthand digit) inside. Each marker has a popup showing the user's name, nearest station, distance in metres, and compartment zone. If multiple users are tracked, the map fits all markers into view automatically.
+- **Station markers** — 12 × 12 px indigo dots for the five nearest stations to the current centre point. Tapping a station marker shows its name.
+
+### Compartment crowd grid
+
+A nine-cell grid (S1 through S9) shows the crowd status of each compartment:
+
+| Status | Colour | Meaning |
+|---|---|---|
+| SAFE | Green | Low occupancy |
+| CAUTION | Amber | Moderate occupancy |
+| AVOID | Red | High occupancy |
+
+Each cell also displays the user count and the distance range from the server's reference point used to assign that zone.
+
+### Connected users list
+
+Lists every user currently present in the simulation state. Each row shows the user's colour dot, display name, nearest station, distance from the server reference in metres, and their compartment assignment.
+
+### Station density bars
+
+A ranked list of stations sorted by occupancy, with a coloured bar that turns green (1 user), amber (2 users), or red (3+ users). This panel only appears when at least one user is tracked.
+
+## Simulation API endpoints
+
+All three endpoints are mounted under `/sim/` in the CrowdIntelligence service:
+
+```http
+POST /sim/ping
+Content-Type: application/json
+
+{
+  "lat": 22.5726,
+  "lng": 88.3639,
+  "user_id": "abc123",
+  "name": "Nayan"
+}
+```
+
+```http
+GET /sim/state
+```
+
+```http
+POST /sim/reset
+```
+
+The portal forwards these at `/sim/*` to `http://127.0.0.1:8000`.
+
+## Optional module: simulation_endpoint.py
+
+The simulation routes are loaded from a separate file in the CrowdIntelligence service:
+
+```python
+# crowdIntelligence/main.py
+try:
+    from simulation_endpoint import router as sim_router
+    app.include_router(sim_router)
+    print("✅ Simulation endpoints loaded (/sim/*)")
+except ImportError as e:
+    print(f"⚠️  Simulation module not loaded: {e}")
+```
+
+<Warning>
+If `simulation_endpoint.py` is absent from the `crowdIntelligence/` directory, the `/sim/*` routes will not be registered and all pings from the simulation page will return 404. The rest of the CrowdIntelligence service — train search, crowd predictions, ML endpoints — continues to work normally.
+</Warning>
+
+When the module is missing, `simulation.html` will still load from the portal, but the setup card will show connection errors in the debug log as soon as tracking starts. No data will appear on the map or in the crowd grid.
+
+<Tip>
+Run the simulation with multiple browser tabs open (different names) to see the compartment grid and station density panels populate with real data from multiple simulated commuters.
+</Tip>

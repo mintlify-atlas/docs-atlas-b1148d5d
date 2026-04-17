@@ -1,0 +1,43 @@
+---
+title: "KolkataRail: AI safety platform for suburban trains"
+description: "Three FastAPI services for Kolkata suburban trains: crowd prediction, Neo4j train search, conversational FIR filing in three languages, and a police dashboard."
+---
+
+KolkataRail Intelligence is an AI-powered safety and crowd intelligence platform built for Kolkata suburban railway commuters and railway safety officers. It fuses real-time crowd reports, historical data, trend signals, and weather conditions to surface crowd risk levels per train — and provides a conversational, multilingual assistant for filing FIR complaints and managing them through a police dashboard.
+
+## Who it's for
+
+- **Commuters** — check crowd levels before boarding, search trains by route or intermediate station, and file incident complaints in English, Hindi, or Bengali.
+- **Railway safety officers and police** — triage and manage submitted complaints, view analytics, and track FIR status through the police dashboard.
+
+## The three services
+
+<CardGroup cols={3}>
+  <Card title="Portal" icon="globe" href="/architecture">
+    The entry point for all users. Serves the web UI on port 5000 and proxies API traffic to the two backend services.
+  </Card>
+  <Card title="Crowd Intelligence" icon="train" href="/features/crowd-intelligence">
+    Runs on port 8000. Handles train search, crowd prediction using a Random Forest ML model and Neo4j graph data, and live crowd reporting.
+  </Card>
+  <Card title="NirbhayaSathi" icon="shield-halved" href="/features/fir-complaints">
+    Runs on port 8001. Manages conversational FIR filing, AI-assisted complaint categorization via Groq LLM, PDF generation, and the police dashboard.
+  </Card>
+</CardGroup>
+
+## Key capabilities
+
+| Capability | Service | Description |
+|---|---|---|
+| Crowd prediction | Crowd Intelligence | Fuses historical, trend, live, and weather signals into GREEN / YELLOW / RED crowd levels |
+| Train search | Crowd Intelligence | Finds trains between stations with direct, reverse, and via-stop support using Neo4j |
+| FIR filing | NirbhayaSathi | Conversational complaint filing with auto-extracted incident details |
+| Police dashboard | NirbhayaSathi | Manage, triage, and analyze submitted complaints |
+| AI categorization | NirbhayaSathi | Groq LLM + RAG for complaint category suggestions and detail extraction |
+
+## Language support
+
+The platform supports **English**, **Hindi**, and **Bengali** through the `langdetect` and `deep-translator` libraries. NirbhayaSathi detects the user's language automatically and responds in kind throughout the FIR session.
+
+<Note>
+  KolkataRail Intelligence includes a `manifest.json` for Progressive Web App (PWA) installation. Users on mobile can install the app to their home screen via the browser's "Add to home screen" prompt, with shortcuts to file a complaint or check crowd levels directly.
+</Note>

@@ -1,0 +1,140 @@
+---
+title: "Real-time crowd prediction with signal fusion"
+description: "KolkataRail fuses historical Neo4j data, 7-day trend, live reports, and weather into GREEN / YELLOW / RED crowd badges, falling back to a Random Forest model."
+---
+
+The crowd intelligence engine computes a crowd risk score for every train result returned by the search and predict APIs. It combines four independent signals into a single fused score, then maps that score to a GREEN (Safe), YELLOW (Caution), or RED (Avoid) badge. When historical data is thin, a Random Forest ML model takes over as the base signal.
+
+## The four signals
+
+| Signal | Base weight | Source |
+|---|---|---|
+| Historical | 50% | `CrowdReport` nodes in Neo4j, filtered by train, day type, and hour |
+| Trend | 30% | 7-day shift in RED-report rate for the same slot |
+| Live user reports | 20% | `CrowdReport` nodes submitted in the last 60 minutes |
+| Weather | Additive bonus | OpenWeatherMap API (Kolkata) or seasonal fallback |
+
+Weather is **not** a base-weight signal. It adds a fixed number of points on top of the weighted base so it can influence the badge without overriding real crowd data.
+
+## Signal 1: Historical data (weight 50%)
+
+The historical signal queries all `CrowdReport` nodes matching the train number, day type (`weekday`, `saturday`, or `sunday`), and the current hour bucket (e.g., `08:00-09:00`).
+
+**Score formula:**
+
+```
+score = (red_count / total) * 100 + (yellow_count / total) * 50
+```
+
+**Confidence levels:**
+
+| Total reports | Confidence |
+|---|---|
+| ≥ 10 | high |
+| ≥ 4 | medium |
+| < 4 | low — ML fallback activates |
+
+When `total` is 0, the historical signal returns a neutral score of 40 with `confidence: low`.
+
+## Signal 2: Trend detection (weight 30%)
+
+The trend signal detects whether crowd conditions for this train slot have shifted over the past 7 days by comparing the recent RED rate to the all-time baseline RED rate for the same slot.
+
+```
+shift = (recent_red / recent_total) - (baseline_red / baseline_total)
+```
+
+| Shift | Trend label | Score |
+|---|---|---|
+| > +20% | spiking | 85 |
+| > +10% | worsening | 60 |
+| > −5% | stable | 30 |
+| > −15% | improving | 10 |
+| ≤ −15% | clear | 0 |
+
+When no baseline data exists, the trend score defaults to 30 (`stable`). When recent data is absent but baseline exists, the score is 25.
+
+## Signal 3: Live user reports (weight 20%)
+
+Live reports are `CrowdReport` nodes with a `timestamp` within the last 60 minutes for the same train and hour bucket. The score formula is identical to the historical formula:
+
+```
+score = (red_count / total) * 100 + (yellow_count / total) * 50
+```
+
+When no live data exists for the current slot, the live signal is excluded and the weights redistribute:
+
+| Condition | Historical weight | Trend weight | Live weight |
+|---|---|---|---|
+| Live data available | 50% | 30% | 20% |
+| No live data | 65% | 35% | — |
+
+Every crowd report submitted via `POST /api/trains/report` feeds into this signal immediately. The badge for the reported train is recomputed and returned in the response.
+
+## Signal 4: Weather (additive bonus)
+
+The weather signal fetches current Kolkata conditions from OpenWeatherMap and is cached for 30 minutes. If the API key is missing or the request fails, a seasonal fallback applies (monsoon months June–September → `rain`; winter months December–February → `fog`).
+
+| Condition | Bonus points |
+|---|---|
+| `heavy_rain` | +12 |
+| `rain` | +6 |
+| `fog` | +3 |
+| `clear` | 0 |
+
+The bonus is capped so the final score never exceeds 100.
+
+## Fusion formula
+
+```
+# With live data:
+base = hist_score * 0.50 + trend_score * 0.30 + live_score * 0.20
+
+# Without live data:
+base = hist_score * 0.65 + trend_score * 0.35
+
+final_score = min(100, base + weather_bonus)
+```
+
+**Badge thresholds:**
+
+| Final score | Badge | Label |
+|---|---|---|
+| ≥ 70 | RED | Avoid |
+| ≥ 40 | YELLOW | Caution |
+| < 40 | GREEN | Safe |
+
+## ML fallback
+
+<Info>
+  The ML fallback activates when the historical signal has fewer than 4 reports for the current train, day type, and hour bucket. It replaces the historical score in the fusion formula; trend, live, and weather signals still apply normally.
+</Info>
+
+The Random Forest model (`crowd_model.pkl`) was trained on historical crowd report data. It uses the following features:
+
+- `hour_of_day` — departure hour (0–23)
+- `day_of_week` — 0 = Monday … 6 = Sunday
+- `train_enc` — label-encoded train number
+- `station_enc` — label-encoded origin station
+- `line_enc` — label-encoded railway line (`ER_MAIN`, `ER_CHORD`, `SER_MAIN`, `CIRCULAR`)
+- `month` — calendar month (1–12)
+- `weather_enc` — label-encoded weather condition
+- `is_peak` — 1 if hour falls in 06:00–10:00 or 16:00–20:00, else 0
+
+The model outputs class probabilities for `AVOID` (→ RED), `CAUTION` (→ YELLOW), and `SAFE` (→ GREEN). The ML score uses the same formula:
+
+```
+ml_score = P(RED) * 100 + P(YELLOW) * 50
+```
+
+This score is then passed through the same fusion formula and badge thresholds as the historical score.
+
+## Badge reasoning
+
+The crowd badge returned in every train result includes a human-readable `reason` field. The reason is augmented automatically when:
+
+- **Trend is spiking** — the reason notes a crowd surge above typical levels.
+- **Live reports exist** — the count of live reports is appended (e.g., `· 3 live reports`).
+- **Rain or heavy rain** — the weather description is appended.
+
+The `source` field in the response indicates whether the badge was computed from `fusion` (historical data was sufficient) or `ml+trend` (ML fallback was used).

@@ -1,0 +1,137 @@
+---
+title: "POST /api/trains/predict — predict crowd by travel time"
+description: "Find trains near a requested travel time and get crowd predictions. Filters results within a 90-minute window of the requested departure time."
+---
+
+This endpoint finds trains matching a route and returns only those whose departure time falls within 90 minutes of your requested travel time, sorted by departure. Each result includes a fused crowd badge computed from historical reports, trend analysis, live user data, and current weather. Use this endpoint when you want to plan travel around a specific time of day rather than browsing all trains on a route.
+
+## Request
+
+**`POST /api/trains/predict`**
+
+<ParamField body="from_station" type="string" required>
+  Partial name of the departure station. Matched using `CONTAINS` against station names in Neo4j.
+</ParamField>
+
+<ParamField body="to_station" type="string" required>
+  Partial name of the destination station.
+</ParamField>
+
+<ParamField body="travel_time" type="string" required placeholder="HH:MM">
+  Requested departure time in 24-hour format, e.g. `"08:30"`. Trains departing within ±90 minutes of this time are included.
+</ParamField>
+
+<ParamField body="date" type="string" placeholder="YYYY-MM-DD">
+  Date for which to compute predictions. Determines day type (weekday / saturday / sunday) and month for seasonal ML features. Defaults to today if omitted.
+</ParamField>
+
+<ParamField body="via_station" type="string">
+  Optional intermediate stop. When provided, the query uses a three-station graph traversal: `from_station → via_station → to_station`.
+</ParamField>
+
+## Response
+
+The response contains all trains within the 90-minute window, ordered by departure time.
+
+<ResponseField name="trains" type="array">
+  List of matching trains with crowd predictions.
+  <Expandable title="train object properties">
+    <ResponseField name="number" type="string">Five-digit train number.</ResponseField>
+    <ResponseField name="name" type="string">Train name.</ResponseField>
+    <ResponseField name="origin" type="string">Train's terminus origin.</ResponseField>
+    <ResponseField name="dest" type="string">Train's terminus destination.</ResponseField>
+    <ResponseField name="depart" type="string">Departure time at `from_station` (HH:MM).</ResponseField>
+    <ResponseField name="arrive" type="string">Arrival time at `to_station` (HH:MM).</ResponseField>
+    <ResponseField name="line" type="string">Rail line identifier.</ResponseField>
+    <ResponseField name="type" type="string">Train type.</ResponseField>
+    <ResponseField name="minutes_from_requested" type="number">Absolute difference in minutes between this train's departure and the requested `travel_time`.</ResponseField>
+    <ResponseField name="badge" type="string">Crowd badge: `RED`, `YELLOW`, or `GREEN`.</ResponseField>
+    <ResponseField name="color" type="string">Lowercase badge color for UI rendering.</ResponseField>
+    <ResponseField name="score" type="number">Fused crowd score 0–100.</ResponseField>
+    <ResponseField name="label" type="string">Human-readable badge label: `"Avoid"`, `"Caution"`, or `"Safe"`.</ResponseField>
+    <ResponseField name="trend" type="string">7-day crowd trend direction.</ResponseField>
+    <ResponseField name="live_reports" type="number">Count of live user reports in the last 60 minutes.</ResponseField>
+    <ResponseField name="weather" type="string">Current weather condition code.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total_trains" type="number">
+  Count of trains returned within the 90-minute window.
+</ResponseField>
+
+<ResponseField name="weather" type="object">
+  Current weather signal. Same shape as returned by `/api/weather`.
+</ResponseField>
+
+<ResponseField name="from_station" type="string">Echo of the request input.</ResponseField>
+<ResponseField name="to_station" type="string">Echo of the request input.</ResponseField>
+<ResponseField name="travel_time" type="string">Echo of the requested time.</ResponseField>
+<ResponseField name="date" type="string">The date used for prediction (YYYY-MM-DD).</ResponseField>
+<ResponseField name="day_type" type="string">Derived day type: `weekday`, `saturday`, or `sunday`.</ResponseField>
+<ResponseField name="timestamp" type="string">ISO 8601 response timestamp.</ResponseField>
+
+## Errors
+
+| Status | Condition |
+|---|---|
+| `400` | `travel_time` is not in `HH:MM` format |
+| `404` | No trains found on the route at all |
+| `404` | Trains exist on the route but none depart within 90 minutes of `travel_time` |
+| `503` | Neo4j database unavailable |
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl --request POST \
+  --url http://localhost:5000/api/trains/predict \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "from_station": "Sealdah",
+    "to_station": "Barasat",
+    "travel_time": "09:00",
+    "date": "2026-04-17"
+  }'
+```
+
+</CodeGroup>
+
+```json response
+{
+  "from_station": "Sealdah",
+  "to_station": "Barasat",
+  "via_station": null,
+  "travel_time": "09:00",
+  "date": "2026-04-17",
+  "day_type": "weekday",
+  "weather": {
+    "condition": "clear",
+    "score": 0,
+    "description": "Clear, 28°C — no weather impact",
+    "temp": 28
+  },
+  "total_trains": 3,
+  "trains": [
+    {
+      "number": "33101",
+      "name": "SDAH-BT LOCAL",
+      "origin": "Sealdah",
+      "dest": "Barasat",
+      "depart": "08:15",
+      "arrive": "08:52",
+      "line": "ER_MAIN",
+      "type": "LOCAL",
+      "minutes_from_requested": 45,
+      "badge": "RED",
+      "color": "red",
+      "score": 74,
+      "label": "Avoid",
+      "trend": "worsening",
+      "live_reports": 3,
+      "weather": "clear"
+    }
+  ],
+  "timestamp": "2026-04-17T09:00:00.000000"
+}
+```

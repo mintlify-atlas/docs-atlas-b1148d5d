@@ -1,0 +1,179 @@
+---
+title: "Stations and weather endpoints for KolkataRail"
+description: "GET /api/stations returns all station names from Neo4j. GET /api/weather returns the current weather signal for Kolkata. GET /health checks service status."
+---
+
+This page documents four utility endpoints provided by the CrowdIntelligence service: station list retrieval, weather signal, system health check, and crowd statistics. These endpoints are lightweight, read-only (except the statistics query), and do not require a request body.
+
+---
+
+## GET /api/stations
+
+Returns the full list of station names stored in Neo4j, sorted alphabetically. The `source` field tells you whether the list came from the database or a fallback.
+
+**`GET /api/stations`**
+
+<ResponseField name="stations" type="array">
+  Array of station name strings, e.g. `["Barasat", "Bandel Jn", "Howrah Jn", ...]`. Returns an empty array if Neo4j is unavailable.
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  `"neo4j"` when the list was loaded from the graph database, or `"fallback"` when the database was unreachable.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url http://localhost:5000/api/stations
+```
+
+</CodeGroup>
+
+```json response
+{
+  "stations": [
+    "Bandel Jn",
+    "Barasat",
+    "Barrackpore",
+    "Howrah Jn",
+    "Sealdah"
+  ],
+  "source": "neo4j"
+}
+```
+
+---
+
+## GET /api/weather
+
+Returns the current weather signal for Kolkata. Used as an additive component in crowd badge computation. Results are cached for 30 minutes.
+
+**`GET /api/weather`**
+
+<ResponseField name="condition" type="string">
+  Weather category: `clear`, `rain`, `heavy_rain`, or `fog`.
+</ResponseField>
+
+<ResponseField name="score" type="number">
+  Additive crowd bonus applied to badge computation: `heavy_rain` → 80, `rain` → 45, `fog` → 20, `clear` → 0. This score is not directly added to the fused badge score; instead it maps to a fixed bonus (heavy\_rain +12 pts, rain +6, fog +3, clear 0).
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Human-readable weather summary including the expected crowd impact.
+</ResponseField>
+
+<ResponseField name="temp" type="number">
+  Temperature in °C.
+</ResponseField>
+
+<Info>
+  If the `OPENWEATHERMAP_KEY` environment variable is set, the endpoint fetches live data from OpenWeatherMap and caches it for 30 minutes. If the key is absent or the API call fails, a seasonal estimate is returned based on the current month: monsoon (June–September), winter fog (December–February), or clear otherwise.
+</Info>
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url http://localhost:5000/api/weather
+```
+
+</CodeGroup>
+
+```json response
+{
+  "condition": "rain",
+  "score": 45,
+  "description": "Rain — moderate crowd increase expected",
+  "temp": 29
+}
+```
+
+---
+
+## GET /health
+
+Returns a simple liveness check for the CrowdIntelligence service. Use this to confirm the backend on port 8000 is running before making other requests.
+
+**`GET /health`**
+
+<ResponseField name="status" type="string">
+  Always `"ok"` when the service is running.
+</ResponseField>
+
+<ResponseField name="service" type="string">
+  Service identifier string: `"KolkataRail API v3.0"`.
+</ResponseField>
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url http://localhost:5000/health
+```
+
+</CodeGroup>
+
+```json response
+{
+  "status": "ok",
+  "service": "KolkataRail API v3.0"
+}
+```
+
+---
+
+## GET /api/stats
+
+Returns aggregate crowd statistics derived from all `CrowdReport` nodes in Neo4j. Includes a distribution breakdown and the five most-reported crowded trains.
+
+**`GET /api/stats`**
+
+<ResponseField name="crowd_distribution" type="object">
+  Count of all crowd reports grouped by level.
+  <Expandable title="properties">
+    <ResponseField name="RED" type="number">Total RED reports across all trains and times.</ResponseField>
+    <ResponseField name="YELLOW" type="number">Total YELLOW reports.</ResponseField>
+    <ResponseField name="GREEN" type="number">Total GREEN reports.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="most_crowded_trains" type="array">
+  Top 5 trains by number of RED crowd reports, descending.
+  <Expandable title="entry properties">
+    <ResponseField name="train" type="string">Train name.</ResponseField>
+    <ResponseField name="red_reports" type="number">Count of RED reports for this train.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total_reports" type="number">
+  Sum of all reports across all crowd levels and all trains.
+</ResponseField>
+
+<Note>
+  If Neo4j is unavailable, this endpoint returns empty collections and a `total_reports` of 0 rather than a 503 error.
+</Note>
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url http://localhost:5000/api/stats
+```
+
+</CodeGroup>
+
+```json response
+{
+  "crowd_distribution": {
+    "RED": 412,
+    "YELLOW": 289,
+    "GREEN": 173
+  },
+  "most_crowded_trains": [
+    { "train": "HWH-SDAH LOCAL", "red_reports": 87 },
+    { "train": "SDAH-BT LOCAL",  "red_reports": 64 }
+  ],
+  "total_reports": 874
+}
+```

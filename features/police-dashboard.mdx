@@ -1,0 +1,141 @@
+---
+title: "Police dashboard for FIR management and analytics"
+description: "The police-facing dashboard at /policedashboard.html for listing, triaging, updating, and analyzing all submitted FIRs with credibility scores and trend charts."
+---
+
+The police dashboard is a browser-based interface served at `/policedashboard.html`. It gives railway safety officers a consolidated view of all submitted FIRs, tools to update case status, and analytics charts covering complaint volume, crime type distribution, and daily trends. All data is read from the JSON records generated alongside each FIR PDF.
+
+## Accessing the dashboard
+
+Navigate to:
+
+```
+http://localhost:5000/policedashboard.html
+```
+
+The dashboard communicates directly with the NirbhayaSathi service (port 8001) using the endpoints described below.
+
+## FIR list
+
+```
+GET /fir/all
+```
+
+Returns all submitted FIRs sorted newest first. Each entry includes:
+
+| Field | Description |
+|---|---|
+| `id` | Session ID (used in other endpoints) |
+| `fir_number` | FIR number in `GRP/HWH/YYYY/MMDD/HHMMSS` format |
+| `date` | Incident date from the FIR |
+| `category` | Crime type, title-cased (e.g., `Sexual Harassment`) |
+| `victim` | Complainant name, or `Anonymous` if not provided |
+| `location` | Incident station or location |
+| `severity` | `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW` |
+| `status` | Current case status: `pending`, `active`, or `resolved` |
+| `priority` | Derived from severity (see priority mapping below) |
+| `credibility_score` | 0–100 score indicating FIR completeness |
+
+## Status management
+
+```
+PATCH /fir/update-status/{session_id}
+```
+
+Update the status of a specific FIR. The request body must include a `status` field:
+
+```json
+{ "status": "active" }
+```
+
+Allowed status values: `active`, `pending`, `resolved`. Any other value returns HTTP 400.
+
+The status is persisted immediately to the FIR's JSON file.
+
+## Priority levels
+
+Priority is derived automatically from the severity field at FIR completion and stored in the JSON record.
+
+| Severity | Priority |
+|---|---|
+| `CRITICAL` | high |
+| `HIGH` | high |
+| `MEDIUM` | medium |
+| `LOW` | low |
+
+## Credibility score
+
+<Info>
+  The credibility score is a 0–100 quality signal for each FIR, computed when the PDF is generated. It is not a judgment on the complainant — it reflects how much information was provided. Officers can use it to prioritize follow-up on well-documented complaints.
+
+  **Formula:**
+  - +10 for each filled scoreable field (up to 10 fields): `complainant_name`, `complainant_age`, `complainant_gender`, `complainant_phone`, `complainant_address`, `incident_date`, `incident_time`, `incident_location`, `train_number`, `description`
+  - +20 if the crime type is a crime against women (sexual_harassment, molestation, stalking, eve_teasing, voyeurism, sexual_assault, rape, domestic_violence)
+  - +10 if the description exceeds 100 characters
+  - Maximum score: 100 (capped)
+</Info>
+
+## Analytics
+
+```
+GET /fir/analytics
+```
+
+Returns four analytics datasets aggregated from all JSON records:
+
+### `complaints_per_hour`
+
+A 24-element array (index = hour 0–23) counting FIRs filed in the last 24 hours. Used to plot a bar or area chart of intraday complaint volume.
+
+### `crime_type_distribution`
+
+An object mapping each crime category (title-cased) to its count across all time. Used to render a pie or bar chart of incident type breakdown.
+
+```json
+{
+  "Sexual Harassment": 14,
+  "Theft": 9,
+  "Physical Assault": 5
+}
+```
+
+### `status_counts`
+
+Counts for each status value:
+
+```json
+{
+  "pending": 18,
+  "active": 7,
+  "resolved": 3
+}
+```
+
+### `daily_trend`
+
+An array of objects covering the last 7 days, each with a `date` (YYYY-MM-DD) and a complaint `count`. Useful for a 7-day sparkline or trend chart.
+
+```json
+[
+  { "date": "2025-04-11", "count": 2 },
+  { "date": "2025-04-12", "count": 5 }
+]
+```
+
+## PDF download
+
+```
+GET /fir/download/{session_id}
+```
+
+Downloads the generated FIR PDF for the given session. Append `?view=true` to open it inline in the browser instead of triggering a download.
+
+If the PDF file is missing but the session data is in memory, the endpoint regenerates the PDF from the stored `fir_data` before serving it. If neither the file nor the session data is available, it returns HTTP 404.
+
+## CPGRAMS tracking
+
+Complainants can track their FIR online at [pgportal.gov.in](https://pgportal.gov.in) using the FIR number. The tracking reference is also included in the `/fir/summary` response and shown in the NirbhayaSathi chat on session completion.
+
+<Tip>
+  Use `GET /fir/status/{session_id}` to check whether a session is complete and which fields have been collected. This is useful for debugging incomplete FIRs that appear in the dashboard with missing information.
+</Tip>

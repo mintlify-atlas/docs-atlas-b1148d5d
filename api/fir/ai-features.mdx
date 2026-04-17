@@ -1,0 +1,384 @@
+---
+title: "AI complaint categorization and train detection"
+description: "AI-powered endpoints for suggesting crime categories, detecting trains from free text, and getting action options after a railway incident."
+---
+
+NirbhayaSathi exposes a set of AI endpoints built on the Groq LLM (llama-3.1-8b-instant) and a retrieval-augmented generation (RAG) index of Indian railway legal documents. These endpoints are designed to be called before or alongside the conversational FIR flow: `POST /ai/suggest-categories` helps the UI offer a guided complaint type picker, `POST /ai/detect-train` extracts train details from natural language, `POST /fir/actions` provides a contextual action menu after incident description, and `POST /fir/chat` handles general railway safety questions.
+
+<Info>
+  All four endpoints accept `language` as `en`, `hi`, or `bn`. Input in Hindi or Bengali is translated to English before LLM processing; the response is in the same language unless otherwise noted.
+</Info>
+
+---
+
+## POST /ai/suggest-categories
+
+Analyses a free-text complaint and returns a primary crime category plus UI-ready alternatives with confidence scoring. Use this to present a categorisation confirmation step before starting the FIR session.
+
+### Request body
+
+<ParamField body="complaint_text" type="string" required>
+  Free-text description of the incident in any supported language. The longer and more specific the description, the higher the classification confidence.
+</ParamField>
+
+<ParamField body="language" type="string" default="en">
+  Language of `complaint_text`. Accepted values: `en`, `hi`, `bn`.
+</ParamField>
+
+### Response — SuggestionResponse
+
+<ResponseField name="complaint_text" type="string" required>
+  Echo of the submitted complaint text.
+</ResponseField>
+
+<ResponseField name="primary_category" type="string" required>
+  The most likely crime type. One of: `sexual_harassment`, `molestation`, `eve_teasing`, `stalking`, `physical_assault`, `robbery`, `theft`, `chain_snatching`, `voyeurism`, `rape`, `threat`, `verbal_abuse`, `other`.
+</ResponseField>
+
+<ResponseField name="confidence" type="number" required>
+  Classification confidence score from `0.0` to `1.0`. Scores below `0.5` indicate ambiguity — the UI should prompt the user to confirm from the `options` list.
+</ResponseField>
+
+<ResponseField name="reasoning" type="string" required>
+  Brief natural-language explanation of why the LLM chose this category.
+</ResponseField>
+
+<ResponseField name="severity" type="string" required>
+  Assessed severity level: `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
+
+  | Severity | Typical crime types |
+  |----------|---------------------|
+  | `CRITICAL` | `rape` |
+  | `HIGH` | `sexual_harassment`, `molestation`, `stalking`, `robbery`, `chain_snatching`, `voyeurism`, `physical_assault` |
+  | `MEDIUM` | `eve_teasing`, `theft`, `threat`, `other` |
+  | `LOW` | `verbal_abuse` |
+</ResponseField>
+
+<ResponseField name="options" type="object[]" required>
+  UI-formatted list of category choices (primary + alternatives) ready to render as a selection list. Each option has `id`, `label`, `icon`, and `selected` keys.
+</ResponseField>
+
+<ResponseField name="guided_prompt" type="string" required>
+  A multi-option formatted prompt string the chat UI can display verbatim to ask the user to confirm or correct the detected category.
+</ResponseField>
+
+<CodeGroup>
+
+```bash Suggest categories
+curl --request POST \
+  --url https://api.kolkatarail.in/ai/suggest-categories \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "complaint_text": "A man was touching me inappropriately in the Sealdah local this morning",
+    "language": "en"
+  }'
+```
+
+```json Response
+{
+  "complaint_text": "A man was touching me inappropriately in the Sealdah local this morning",
+  "primary_category": "sexual_harassment",
+  "confidence": 0.92,
+  "reasoning": "Complainant describes unwanted physical contact of a sexual nature by an unknown male in a train.",
+  "severity": "HIGH",
+  "options": [
+    { "id": "sexual_harassment", "label": "Sexual Harassment / Groping", "selected": true },
+    { "id": "molestation",       "label": "Molestation",                "selected": false },
+    { "id": "eve_teasing",       "label": "Eve Teasing / Catcalling",   "selected": false }
+  ],
+  "guided_prompt": "I've identified this as **Sexual Harassment**. Is this correct, or would you like to choose a different category?\n1. Sexual Harassment / Groping ✓\n2. Molestation\n3. Eve Teasing / Catcalling\n4. Other (describe)"
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /ai/detect-train
+
+Extracts train information from a free-text message. Handles three detection strategies: explicit train numbers (e.g. "37811"), route + time patterns, and known train names. Returns the first confident match plus alternatives when multiple trains are plausible.
+
+### Request body
+
+<ParamField body="message" type="string" required>
+  Free text that may mention a train number, name, route, or time.
+</ParamField>
+
+### Response
+
+<ResponseField name="detected" type="boolean" required>
+  `true` if a train was identified; `false` otherwise. When `false`, all other fields are absent.
+</ResponseField>
+
+<ResponseField name="train_number" type="string">
+  Detected train number, e.g. `"37811"`.
+</ResponseField>
+
+<ResponseField name="train_name" type="string">
+  Human-readable train name if available in the local dataset, e.g. `"Sealdah-Bandel EMU"`.
+</ResponseField>
+
+<ResponseField name="detected_by" type="string">
+  Detection method: `explicit_number` when a numeric train number was found in the message, or `route_time_match` when the train was inferred from route and time context.
+</ResponseField>
+
+<ResponseField name="from_station" type="string">
+  Origin station of the detected train.
+</ResponseField>
+
+<ResponseField name="to_station" type="string">
+  Destination station of the detected train.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Confidence of the match from `0.0` to `1.0`.
+</ResponseField>
+
+<ResponseField name="alternatives" type="object[]">
+  Array of other plausible trains when multiple matches exist. Each entry has the same shape as the primary response fields.
+</ResponseField>
+
+<CodeGroup>
+
+```bash Detect train from message
+curl --request POST \
+  --url https://api.kolkatarail.in/ai/detect-train \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "message": "It happened on train 37811 between Sealdah and Bandel around 9am"
+  }'
+```
+
+```json Detected response
+{
+  "detected": true,
+  "train_number": "37811",
+  "train_name": "Sealdah-Bandel EMU",
+  "detected_by": "explicit_number",
+  "from_station": "Sealdah",
+  "to_station": "Bandel Junction",
+  "confidence": 0.98,
+  "alternatives": []
+}
+```
+
+```json Not detected response
+{
+  "detected": false
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /fir/actions
+
+The primary entry point for the NirbhayaSathi action menu. After a user describes an incident, this endpoint performs complaint classification, train detection, RAG-assisted legal rights lookup, and returns five contextual action cards (start FIR, show roadmap, know rights, where to report, nearby police). Non-railway messages are rejected gracefully.
+
+<Warning>
+  If the complaint text is not identified as a railway crime, the response has `status: "rejected"` with a human-readable explanation message — it does **not** return an HTTP error code. Always check `status` before rendering the actions array.
+</Warning>
+
+### Request body
+
+<ParamField body="complaint_text" type="string" required>
+  Free-text description of the incident. Must describe a railway crime to receive action cards.
+</ParamField>
+
+<ParamField body="language" type="string" default="en">
+  Language of the complaint text. Accepted values: `en`, `hi`, `bn`.
+</ParamField>
+
+### Response
+
+<ResponseField name="detected_entities" type="object">
+  Entities extracted from the complaint.
+
+  <Expandable title="detected_entities properties">
+    <ResponseField name="crime_type" type="string">
+      Classified crime type, title-cased (e.g. `"Sexual Harassment"`).
+    </ResponseField>
+    <ResponseField name="severity" type="string">
+      `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
+    </ResponseField>
+    <ResponseField name="confidence" type="number">
+      Classification confidence from `0.0` to `1.0`.
+    </ResponseField>
+    <ResponseField name="train" type="object">
+      Detected train info (`train_number`, `train_name`, `from_station`, `to_station`), or `null` if no train was identified.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="authority_pill" type="object">
+  The primary authority to contact for this complaint type.
+
+  <Expandable title="authority_pill properties">
+    <ResponseField name="name" type="string">
+      Authority name, e.g. `"Government Railway Police (GRP)"`.
+    </ResponseField>
+    <ResponseField name="contact" type="string">
+      Main contact number.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="actions" type="object[]">
+  Five action cards. Each action has `id`, `icon`, `title`, `description`, and `action` (action type string). Some actions include a `data` object with pre-fetched content:
+
+  | `action` | Description | `data` keys |
+  |----------|-------------|-------------|
+  | `start_fir` | Opens the conversational FIR flow | — |
+  | `show_roadmap` | Step-by-step immediate actions (RAG + LLM generated) | `steps` |
+  | `show_rights` | Legal rights and compensation info | `legal_info`, `compensation`, `cpgrams` |
+  | `show_where_to_report` | Primary authority and online portal | `primary`, `online` |
+  | `show_nearby_police` | Nearest GRP/RPF stations and helplines | `police_stations`, `helplines` |
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  `"rejected"` when the message is not a railway complaint. In this case `actions` is an empty array and `detected_entities` is `null`.
+</ResponseField>
+
+<CodeGroup>
+
+```bash Get action options
+curl --request POST \
+  --url https://api.kolkatarail.in/fir/actions \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "complaint_text": "Someone stole my bag on the Howrah-Burdwan express last night",
+    "language": "en"
+  }'
+```
+
+```json Response
+{
+  "detected_entities": {
+    "crime_type": "Theft",
+    "severity": "MEDIUM",
+    "confidence": 0.88,
+    "train": {
+      "train_number": "12339",
+      "train_name": "Howrah-Burdwan Express",
+      "from_station": "Howrah Junction",
+      "to_station": "Burdwan"
+    }
+  },
+  "authority_pill": {
+    "name": "Government Railway Police (GRP)",
+    "contact": "022-22694727"
+  },
+  "actions": [
+    {
+      "id": "complaint_letter",
+      "icon": "📝",
+      "title": "Start First Complaint File",
+      "description": "File an official FIR complaint with auto-filled details",
+      "action": "start_fir"
+    },
+    {
+      "id": "show_roadmap",
+      "icon": "🗺️",
+      "title": "Roadmap: What to do",
+      "description": "Step-by-step guidance on your immediate next actions",
+      "action": "show_roadmap",
+      "data": {
+        "steps": [
+          "1. Approach the nearest TTE or Railway Guard and report immediately.",
+          "2. File a Zero FIR at any GRP station — no jurisdiction restriction.",
+          "3. Note your PNR, seat number, and coach as evidence."
+        ]
+      }
+    }
+  ]
+}
+```
+
+```json Rejected (non-railway)
+{
+  "status": "rejected",
+  "message": "I'm NischaySathi — I can only help with railway crime complaints (theft, harassment, assault, robbery, etc. on Indian trains/stations).\n\nPlease describe a railway incident and I'll help you file an FIR.",
+  "detected_entities": null,
+  "authority_pill": null,
+  "actions": []
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /fir/chat
+
+A Groq + RAG powered general-purpose railway safety chatbot. Answers questions about safety, legal rights, IPC sections, complaint procedures, and Kolkata suburban rail information. Politely redirects messages that are unrelated to railway topics.
+
+### Request body
+
+<ParamField body="message" type="string" required>
+  The user's question or message.
+</ParamField>
+
+<ParamField body="language" type="string" default="en">
+  Language of the message. Accepted values: `en`, `hi`, `bn`. Non-English input is translated to English before RAG retrieval; the response is generated in the original language.
+</ParamField>
+
+<ParamField body="topic" type="string" default="general">
+  Optional topic hint for future routing. Currently unused in routing logic but accepted and stored.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  `"ok"` on success (including graceful off-topic redirects).
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  The bot's response text. When the Groq call fails, a safe fallback message is returned and `source` is set to `"fallback"`.
+</ResponseField>
+
+<ResponseField name="source" type="string" required>
+  Origin of the response: `"groq_rag"` when the LLM produced the answer, or `"fallback"` when an error occurred and the hardcoded fallback message was used.
+</ResponseField>
+
+<ResponseField name="language" type="string" required>
+  Echo of the `language` parameter from the request.
+</ResponseField>
+
+<CodeGroup>
+
+```bash Ask a rights question
+curl --request POST \
+  --url https://api.kolkatarail.in/fir/chat \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "message": "What IPC section applies if someone gropes a woman on a train?",
+    "language": "en",
+    "topic": "legal_rights"
+  }'
+```
+
+```json Response
+{
+  "status": "ok",
+  "message": "Under Indian law, groping on a train falls under IPC Section 354A (sexual harassment) and IPC Section 354 (outraging modesty), updated as BNS Section 74 under the Bharatiya Nyaya Sanhita. You should file an FIR at the nearest Government Railway Police (GRP) station. If you are on a train, alert the TTE immediately and request that the train stop at the next station with a GRP post.",
+  "source": "groq_rag",
+  "language": "en"
+}
+```
+
+```bash Ask in Hindi
+curl --request POST \
+  --url https://api.kolkatarail.in/fir/chat \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "message": "ट्रेन में चोरी होने पर क्या करें?",
+    "language": "hi"
+  }'
+```
+
+</CodeGroup>
+
+<Note>
+  The chatbot operates within a bounded scope. If the user describes an actual incident (rather than asking a general question), the response suggests using the complaint filing feature at `/fir/start`.
+</Note>

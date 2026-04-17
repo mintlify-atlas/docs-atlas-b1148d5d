@@ -1,0 +1,121 @@
+---
+title: "GET /api/trains/ml-compare — ML vs historical heatmap"
+description: "24-hour hourly breakdown comparing Random Forest predictions against Neo4j historical crowd data, with agreement percentage and per-hour verdict for any train."
+---
+
+This endpoint powers the ML Insights panel. For a given train it loops through all 24 hours of the current day type (weekday / saturday / sunday), fetches the historical crowd score from Neo4j, runs the Random Forest model, and returns both side-by-side so you can see where they agree and where they diverge. The `agree_pct` field summarises overall agreement as a percentage across hours that have historical data.
+
+## Request
+
+**`GET /api/trains/ml-compare/{train_number}`**
+
+<ParamField path="train_number" type="string" required placeholder="e.g. 37811">
+  The 5-digit train number to analyse.
+</ParamField>
+
+## Response
+
+<ResponseField name="train_number" type="string">The requested train number.</ResponseField>
+<ResponseField name="train_name" type="string">Train name as stored in Neo4j. Returns `"Unknown"` if the train is not found.</ResponseField>
+<ResponseField name="line" type="string">Rail line identifier, e.g. `ER_MAIN`.</ResponseField>
+<ResponseField name="origin" type="string">Train's terminus origin station.</ResponseField>
+<ResponseField name="destination" type="string">Train's terminus destination station.</ResponseField>
+<ResponseField name="day_type" type="string">Day type used for historical queries: `weekday`, `saturday`, or `sunday`.</ResponseField>
+<ResponseField name="date" type="string">Date on which the comparison was run (YYYY-MM-DD).</ResponseField>
+
+<ResponseField name="agree_pct" type="number">
+  Percentage of hours (out of those with historical data) where the ML badge and the historical badge match. `0` when no historical data exists for any hour.
+</ResponseField>
+
+<ResponseField name="current_hour" type="object">
+  The hourly prediction object (same shape as entries in `hourly`) for the current hour. Useful for a quick summary without iterating the full array.
+</ResponseField>
+
+<ResponseField name="hourly" type="array">
+  Array of 24 objects, one per hour of the day (index 0 = midnight, index 23 = 23:00).
+  <Expandable title="hourly entry properties">
+    <ResponseField name="hour" type="string">Hour label in `HH:00` format, e.g. `"08:00"`.</ResponseField>
+    <ResponseField name="historical_badge" type="string">Historical crowd badge for this hour: `RED`, `YELLOW`, `GREEN`, or `"NO DATA"` when fewer than 2 reports exist.</ResponseField>
+    <ResponseField name="historical_score" type="number">Historical crowd score 0–100, or `null` when no data.</ResponseField>
+    <ResponseField name="historical_total" type="number">Total number of historical reports used for this hour bucket.</ResponseField>
+    <ResponseField name="ml_badge" type="string">ML model prediction: `RED`, `YELLOW`, or `GREEN`.</ResponseField>
+    <ResponseField name="ml_score" type="number">ML-derived crowd score 0–100.</ResponseField>
+    <ResponseField name="ml_confidence" type="number">Highest class probability from the model as a percentage (0–100).</ResponseField>
+    <ResponseField name="ml_probabilities" type="object">
+      Per-class probabilities from the Random Forest model.
+      <Expandable title="properties">
+        <ResponseField name="RED" type="number">Probability of RED (0–1).</ResponseField>
+        <ResponseField name="YELLOW" type="number">Probability of YELLOW (0–1).</ResponseField>
+        <ResponseField name="GREEN" type="number">Probability of GREEN (0–1).</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="agreement" type="boolean">
+      `true` if ML and historical badges match, `false` if they differ, `null` if there is no historical data for this hour.
+    </ResponseField>
+    <ResponseField name="verdict" type="string">
+      Summary of the comparison: `agree`, `disagree`, or `ml_only`. See the note below.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Info>
+  A verdict of `ml_only` means the historical badge is `"NO DATA"` for that hour — there are fewer than 2 crowd reports in the database for that train/hour/day-type combination. The ML model still produces a prediction, but there is no historical baseline to compare against.
+</Info>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url http://localhost:5000/api/trains/ml-compare/37811
+```
+
+</CodeGroup>
+
+```json response
+{
+  "train_number": "37811",
+  "train_name": "HWH-MSAE LOCAL",
+  "line": "ER_MAIN",
+  "origin": "Howrah Jn",
+  "destination": "Masagram",
+  "day_type": "weekday",
+  "date": "2026-04-17",
+  "agree_pct": 83,
+  "current_hour": {
+    "hour": "08:00",
+    "historical_badge": "RED",
+    "historical_score": 78,
+    "historical_total": 14,
+    "ml_badge": "RED",
+    "ml_score": 72,
+    "ml_confidence": 81.4,
+    "ml_probabilities": {
+      "RED": 0.814,
+      "YELLOW": 0.142,
+      "GREEN": 0.044
+    },
+    "agreement": true,
+    "verdict": "agree"
+  },
+  "hourly": [
+    {
+      "hour": "00:00",
+      "historical_badge": "NO DATA",
+      "historical_score": null,
+      "historical_total": 0,
+      "ml_badge": "GREEN",
+      "ml_score": 8,
+      "ml_confidence": 92.1,
+      "ml_probabilities": {
+        "RED": 0.012,
+        "YELLOW": 0.067,
+        "GREEN": 0.921
+      },
+      "agreement": null,
+      "verdict": "ml_only"
+    }
+  ]
+}
+```

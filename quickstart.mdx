@@ -1,80 +1,117 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Run KolkataRail Intelligence: quickstart guide"
+description: "Install dependencies, configure environment variables, and start all three KolkataRail services — portal, CrowdIntelligence, and NirbhayaSathi — in minutes."
 ---
 
-## Get started in three steps
-
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+KolkataRail Intelligence runs as three separate FastAPI services. Start them in order — NirbhayaSathi first, then Crowd Intelligence, then the portal — so the portal's proxy routes are live when you open the browser.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  All three services must be running simultaneously. The portal on port 5000 proxies requests to port 8000 (Crowd Intelligence) and port 8001 (NirbhayaSathi). If either backend is down, the portal returns a 503 error for affected routes.
 </Note>
+
+## Prerequisites
+
+- Python 3.11 or later
+- A running Neo4j instance (required by Crowd Intelligence)
+- `GROQ_API_KEY` — optional, enables AI complaint features in NirbhayaSathi
+- `OPENWEATHERMAP_KEY` — optional, enables weather signal in crowd prediction
+
+## Setup
+
+<Steps>
+  <Step title="Create a virtual environment and install packages">
+    From the repository root, create a virtual environment and install all required packages:
+
+    <CodeGroup>
+
+    ```powershell Windows (PowerShell)
+    python -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    pip install --upgrade pip
+    pip install fastapi uvicorn[standard] httpx python-dotenv neo4j groq langdetect deep-translator
+    ```
+
+    ```bash macOS / Linux
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install --upgrade pip
+    pip install fastapi uvicorn[standard] httpx python-dotenv neo4j groq langdetect deep-translator
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      There is no `requirements.txt` in this repository. Install the packages manually using the command above.
+    </Note>
+  </Step>
+
+  <Step title="Set up environment variables">
+    Create a `.env` file in the repository root. At minimum, set the Neo4j credentials so Crowd Intelligence can connect:
+
+    ```bash .env
+    NEO4J_URI=bolt://localhost:7687
+    NEO4J_USER=neo4j
+    NEO4J_PASSWORD=your_password
+    ```
+
+    For optional AI and weather features, see the [environment variables reference](/configuration/environment-variables).
+  </Step>
+
+  <Step title="Start NirbhayaSathi (port 8001)">
+    Open a terminal, navigate to the `NirbhayaSathi` directory, and start the service:
+
+    ```powershell
+    cd .\NirbhayaSathi
+    python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    ```
+
+    Wait for the startup log before proceeding to the next step.
+  </Step>
+
+  <Step title="Start Crowd Intelligence (port 8000)">
+    Open a second terminal, navigate to the `crowdIntelligence` directory, and start the service:
+
+    ```powershell
+    cd .\crowdIntelligence
+    python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ```
+
+    On startup, the service pings Neo4j. You should see `Neo4j connected` in the log. If the ping fails, check your `NEO4J_*` environment variables.
+  </Step>
+
+  <Step title="Start the portal (port 5000)">
+    Open a third terminal from the repository root and start the portal:
+
+    ```powershell
+    python -m uvicorn main:app --host 0.0.0.0 --port 5000 --reload
+    ```
+  </Step>
+
+  <Step title="Open the portal in your browser">
+    Navigate to `http://localhost:5000/portal.html`.
+
+    You should see the passenger-facing portal with crowd level lookup, train search, and a link to the NirbhayaSathi complaint assistant.
+  </Step>
+</Steps>
+
+<Tip>
+  On Windows, `start.bat` launches all three servers automatically in separate terminal windows. Update the hardcoded paths inside the file to match your local directory structure before running it.
+</Tip>
+
+## After setup
+
+Once all three services are running, the portal gives you access to:
+
+- **Crowd level lookup** — search a train and get a GREEN / YELLOW / RED crowd badge fused from historical, trend, live, and weather signals.
+- **Train search** — find trains between any two stations, including via an intermediate stop.
+- **FIR complaint filing** — start a conversational complaint session in English, Hindi, or Bengali.
+- **Police dashboard** — available at `http://localhost:5000/policedashboard.html` for safety officers.
+
+## Useful URLs
+
+| URL | Description |
+|---|---|
+| `http://localhost:5000/portal.html` | Passenger portal |
+| `http://localhost:5000/docs` | Portal gateway API docs |
+| `http://localhost:8000/docs` | Crowd Intelligence API docs |
+| `http://localhost:8001/docs` | NirbhayaSathi API docs |

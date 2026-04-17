@@ -1,97 +1,65 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "KolkataRail: crowd safety platform for Kolkata trains"
+description: "Real-time crowd prediction, Neo4j-backed train search, and AI-assisted FIR complaint filing for Kolkata suburban railway commuters and safety officers."
 ---
 
-## Setting up
+KolkataRail Intelligence helps commuters on Kolkata suburban trains make safer, smarter travel decisions. The platform fuses real-time crowd reports, historical data, trend signals, and weather to predict crowding levels — and provides a conversational AI system for filing FIR complaints in English, Hindi, or Bengali.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run all three services and open the passenger portal in under 10 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand how the portal, crowd intelligence, and NirbhayaSathi services connect.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Crowd Intelligence API" icon="chart-mixed" href="/api/crowd/train-search">
+    Search trains and get real-time crowd badges fused from multiple signals.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="FIR Complaint API" icon="shield-halved" href="/api/fir/start-reply">
+    File railway incident complaints conversationally with AI-assisted categorization.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What KolkataRail Intelligence does
 
-Everything you need to create world-class documentation.
+The platform runs as three coordinated FastAPI services:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+- **Portal** (port 5000) — serves the web UI and proxies all API traffic to the two backend services
+- **Crowd Intelligence** (port 8000) — train search, crowd prediction, live reporting, and ML insights
+- **NirbhayaSathi** (port 8001) — conversational FIR filing, AI categorization, and a police dashboard
 
-## Need inspiration?
+<CardGroup cols={2}>
+  <Card title="Crowd & Route Intelligence" icon="train" href="/features/crowd-intelligence">
+    Signal fusion across historical data, trends, live reports, and weather for crowd prediction.
+  </Card>
+  <Card title="Train Search" icon="magnifying-glass" href="/features/train-search">
+    Neo4j graph-backed search with direct, reverse, and via-station route support.
+  </Card>
+  <Card title="FIR Complaint Filing" icon="file-shield" href="/features/fir-complaints">
+    Multilingual conversational interface for filing FIRs with auto-extracted details.
+  </Card>
+  <Card title="Police Dashboard" icon="building-shield" href="/features/police-dashboard">
+    Manage, triage, and analyze submitted complaints with analytics and status tracking.
+  </Card>
+</CardGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
+## Get started
+
+<Steps>
+  <Step title="Install dependencies">
+    Create a Python virtual environment and install the required packages.
+  </Step>
+  <Step title="Configure environment variables">
+    Set Neo4j credentials and optional API keys for weather and Groq AI.
+  </Step>
+  <Step title="Start all three services">
+    Launch NirbhayaSathi on port 8001, Crowd Intelligence on 8000, and the portal on 5000.
+  </Step>
+  <Step title="Open the portal">
+    Navigate to `http://localhost:5000/portal.html` to access the passenger-facing interface.
+  </Step>
+</Steps>
+
+<Card title="Full setup guide" icon="list-check" href="/quickstart">
+  Follow the step-by-step quickstart with all commands and configuration details.
 </Card>

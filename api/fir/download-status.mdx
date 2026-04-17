@@ -1,0 +1,228 @@
+---
+title: "FIR download, status, and session endpoints"
+description: "Retrieve generated FIR PDFs, poll live session status, and fetch the structured FIR summary for completed railway complaint sessions."
+---
+
+After a conversational session reaches `status: "complete"`, three supporting endpoints let clients fetch the generated PDF, poll the session for field-collection progress, and retrieve a structured checkout summary with tracking reference, authority contact, and compensation eligibility. All three endpoints operate on the same `session_id` UUID returned by `/fir/start`.
+
+---
+
+## GET /fir/download/{session_id}
+
+Returns the generated FIR as a PDF file. The server first checks whether the file exists on disk; if the file is missing but the session still holds `fir_data` in memory (e.g. after a temporary disk issue), it attempts to regenerate the PDF before serving it.
+
+### Path parameter
+
+<ParamField path="session_id" type="string" required>
+  UUID of the completed FIR session.
+</ParamField>
+
+### Query parameter
+
+<ParamField query="view" type="boolean" default="false">
+  Controls the `Content-Disposition` header. Set to `true` to serve the PDF inline for browser preview (`Content-Disposition: inline`). Default `false` triggers a file download (`Content-Disposition: attachment`). The filename is always `FIR_{fir_number}.pdf` with any `/` in the FIR number replaced by `_`.
+</ParamField>
+
+### Response
+
+A binary PDF file with `Content-Type: application/pdf`.
+
+<Note>
+  The PDF filename uses the FIR number stored in the session, falling back to the first 8 characters of the session UUID if no FIR number is available.
+</Note>
+
+### Error responses
+
+| HTTP status | Condition |
+|-------------|-----------|
+| `404` | PDF file not found on disk **and** session has no stored `fir_data` to regenerate from. This happens when the session has expired or was never completed. |
+| `500` | PDF regeneration was attempted (session has `fir_data`) but the generation function raised an exception. |
+
+<CodeGroup>
+
+```bash Download as file
+curl --request GET \
+  --url 'https://api.kolkatarail.in/fir/download/f3a1c2d4-e5b6-7890-abcd-ef1234567890' \
+  --output 'FIR_GRP_SEA_2026_00412.pdf'
+```
+
+```bash Open in browser (inline)
+curl --request GET \
+  --url 'https://api.kolkatarail.in/fir/download/f3a1c2d4-e5b6-7890-abcd-ef1234567890?view=true'
+```
+
+</CodeGroup>
+
+---
+
+## GET /fir/status/{session_id}
+
+Returns the current state of a session including the active phase, which fields have been collected so far, and the key of the field currently being asked. Useful for polling a session that is taking multiple turns, or for debugging conversation state.
+
+### Path parameter
+
+<ParamField path="session_id" type="string" required>
+  UUID of the FIR session to inspect.
+</ParamField>
+
+### Response
+
+<ResponseField name="session_id" type="string" required>
+  Echo of the requested session UUID.
+</ResponseField>
+
+<ResponseField name="phase" type="string" required>
+  Current stage of the state machine.
+
+  | Value | Meaning |
+  |-------|---------|
+  | `initial` | Language or first message not yet received |
+  | `mandatory` | Collecting required fields |
+  | `optional` | Collecting optional fields (each skippable) |
+  | `complete` | All mandatory fields collected; PDF generated |
+</ResponseField>
+
+<ResponseField name="is_complete" type="boolean" required>
+  `true` when all mandatory fields have been collected and the PDF has been generated.
+</ResponseField>
+
+<ResponseField name="collected_fields" type="string[]" required>
+  List of field keys that have been collected so far (e.g. `["complainant_name", "complainant_phone", "incident_date"]`).
+</ResponseField>
+
+<ResponseField name="current_field" type="string">
+  Key of the field the bot is currently asking for. `null` when `is_complete` is `true`.
+</ResponseField>
+
+### Error responses
+
+| HTTP status | Condition |
+|-------------|-----------|
+| `404` | Session not found or has expired. |
+
+<CodeGroup>
+
+```bash Check session status
+curl --request GET \
+  --url 'https://api.kolkatarail.in/fir/status/f3a1c2d4-e5b6-7890-abcd-ef1234567890'
+```
+
+```json Response
+{
+  "session_id": "f3a1c2d4-e5b6-7890-abcd-ef1234567890",
+  "phase": "mandatory",
+  "is_complete": false,
+  "collected_fields": [
+    "complainant_name",
+    "complainant_phone",
+    "incident_date",
+    "incident_time"
+  ],
+  "current_field": "train_number"
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /fir/summary
+
+Generates a structured checkout summary for a completed FIR session. Includes a tracking reference, the assigned authority with contact details, follow-up date, and compensation eligibility. Intended for the post-submission confirmation screen.
+
+<Warning>
+  This endpoint returns `HTTP 400` if the session exists but is not yet complete. Always confirm `is_complete: true` via `/fir/status` or a `status: "complete"` response from `/fir/reply` before calling this endpoint.
+</Warning>
+
+### Query parameters
+
+<ParamField query="session_id" type="string" required>
+  UUID of the completed FIR session.
+</ParamField>
+
+<ParamField query="locale" type="string" default="en">
+  Locale hint for any localised strings in the response. Accepted values: `en`, `hi`, `bn`. Currently affects summary text formatting; full i18n support is planned.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string" required>
+  Always `"ready_for_download"` for a successfully completed FIR.
+</ResponseField>
+
+<ResponseField name="fir_number" type="string" required>
+  The assigned FIR reference number (e.g. `GRP/SEA/2026/00412`).
+</ResponseField>
+
+<ResponseField name="tracking_reference" type="string" required>
+  Unique tracking ID in the format `RM-YYYYMMDD-{6CHARS}` where `6CHARS` is derived from the first 6 characters of the session UUID (uppercased). Example: `RM-20260417-F3A1C2`.
+</ResponseField>
+
+<ResponseField name="filed_date" type="string" required>
+  Date on which the FIR was filed, taken from the `incident_date` field stored in `fir_data`.
+</ResponseField>
+
+<ResponseField name="follow_up_date" type="string" required>
+  Recommended follow-up date, 7 calendar days from the time this endpoint is called. Format: `DD/MM/YYYY`.
+</ResponseField>
+
+<ResponseField name="authority_pill" type="object" required>
+  The authority responsible for investigating the complaint.
+
+  <Expandable title="authority_pill properties">
+    <ResponseField name="name" type="string">
+      Authority name, e.g. `"Government Railway Police (GRP)"`.
+    </ResponseField>
+    <ResponseField name="contact" type="string">
+      Primary contact number, e.g. `"9836100333"`.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      Registration status string, e.g. `"Registered"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="compensation_eligible" type="boolean" required>
+  `true` when the FIR severity is `HIGH` or `CRITICAL`. When `true`, the complainant may be entitled to compensation under the Railways Act 2016.
+</ResponseField>
+
+<ResponseField name="cpgrams_reference" type="string" required>
+  CPGRAMS online tracking instruction, e.g. `"Track online at: pgportal.gov.in with FIR number GRP/SEA/2026/00412"`.
+</ResponseField>
+
+### Error responses
+
+| HTTP status | Condition |
+|-------------|-----------|
+| `400` | FIR session is not yet complete, or `fir_data` is unavailable on the session object. |
+| `404` | Session not found or has expired. |
+| `500` | Internal error during summary generation. |
+
+<CodeGroup>
+
+```bash Fetch FIR summary
+curl --request POST \
+  --url 'https://api.kolkatarail.in/fir/summary?session_id=f3a1c2d4-e5b6-7890-abcd-ef1234567890&locale=en'
+```
+
+```json Response
+{
+  "status": "ready_for_download",
+  "fir_number": "GRP/SEA/2026/00412",
+  "tracking_reference": "RM-20260417-F3A1C2",
+  "filed_date": "17/04/2026",
+  "follow_up_date": "24/04/2026",
+  "authority_pill": {
+    "name": "Government Railway Police (GRP)",
+    "contact": "9836100333",
+    "status": "Registered"
+  },
+  "compensation_eligible": true,
+  "compensation_info": "Eligible for compensation under Railways Act, 2016",
+  "cpgrams_reference": "Track online at: pgportal.gov.in with FIR number GRP/SEA/2026/00412",
+  "complaint_draft_available": true,
+  "multilingual_available": ["en", "hi", "bn"]
+}
+```
+
+</CodeGroup>

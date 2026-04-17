@@ -1,0 +1,159 @@
+---
+title: "AI-assisted FIR complaint filing on trains"
+description: "Conversational, session-based FIR filing for railway incidents with Groq LLM auto-extraction, multilingual support, PDF generation, and built-in rate limiting."
+---
+
+NirbhayaSathi provides a conversational FIR filing system for railway incidents. Instead of presenting a form, it walks the complainant through a guided chat session: it extracts as many fields as possible from the first message, then asks for each missing mandatory field one at a time. When all mandatory fields are collected, it generates a PDF and a JSON record automatically.
+
+## Supported incident types
+
+The following crime types are accepted and mapped to their legal sections under the IPC/BNS:
+
+<AccordionGroup>
+  <Accordion title="Crimes against women">
+    - `sexual_harassment` — Sexual Harassment / Groping / Inappropriate Touch
+    - `molestation` — Molestation
+    - `eve_teasing` — Eve Teasing / Catcalling
+    - `stalking` — Stalking / Following
+    - `voyeurism` — Voyeurism / Recording without consent
+    - `rape` — Rape / Sexual Assault
+  </Accordion>
+  <Accordion title="Physical and financial crimes">
+    - `physical_assault` — Physical Assault / Beating
+    - `robbery` — Robbery / Mugging
+    - `theft` — Theft / Pickpocketing
+    - `chain_snatching` — Chain / Jewelry Snatching
+  </Accordion>
+  <Accordion title="Verbal and intimidation crimes">
+    - `threat` — Threat / Intimidation
+    - `verbal_abuse` — Verbal Abuse / Insults
+  </Accordion>
+</AccordionGroup>
+
+Only railway-related incidents are accepted. If the initial message describes a non-railway matter, the Groq LLM classifies it and the session is rejected with an explanatory message.
+
+## FIR fields
+
+### Mandatory fields
+
+The bot must collect all eight mandatory fields before generating the PDF. They are asked in the order listed below.
+
+| Field | Description |
+|---|---|
+| `complainant_name` | Full name of the person filing the complaint |
+| `complainant_phone` | Contact phone number |
+| `incident_date` | Date the incident occurred |
+| `incident_time` | Time the incident occurred |
+| `train_number` | Train number (can be skipped if unknown) |
+| `incident_station` | Station or stretch where the incident occurred |
+| `crime_type` | Type of incident, selected from the supported list |
+| `crime_description` | Free-text description of what happened |
+
+### Optional fields
+
+These are collected after all mandatory fields are confirmed. The user can skip any of them.
+
+| Field | Description |
+|---|---|
+| `complainant_age` | Age group of the complainant |
+| `complainant_gender` | Gender of the complainant |
+| `complainant_address` | Residential address |
+| `coach` | Coach number or designation |
+| `accused_description` | Physical description of the accused |
+| `witnesses` | Whether witnesses were present |
+
+## Session flow
+
+<Steps>
+  <Step title="Start a session">
+    Send `POST /fir/start` with the user's initial complaint message and preferred language (`en`, `hi`, or `bn`).
+
+    The Groq LLM (`llama-3.1-8b-instant`) reads the message and attempts to extract all FIR fields in a single pass. Regex heuristics run as a fallback when the LLM call fails or returns incomplete data.
+
+    The bot responds with a summary of what it extracted and asks for the first missing mandatory field.
+
+    ```bash
+    curl -X POST http://localhost:8001/fir/start \
+      -H "Content-Type: application/json" \
+      -d '{
+        "message": "I was groped on the Howrah–Burdwan local this morning around 8am at Howrah station.",
+        "language": "en"
+      }'
+    ```
+  </Step>
+
+  <Step title="Reply to each question">
+    Send `POST /fir/reply` with the `session_id` returned in the previous response and the user's answer.
+
+    The bot stores the answer, moves to the next missing mandatory field, and continues until all fields are collected.
+
+    ```bash
+    curl -X POST http://localhost:8001/fir/reply \
+      -H "Content-Type: application/json" \
+      -d '{
+        "session_id": "a1b2c3d4-...",
+        "message": "Priya Sharma"
+      }'
+    ```
+  </Step>
+
+  <Step title="PDF and JSON generated automatically">
+    Once all mandatory fields are present, the bot finalizes the FIR on the final `POST /fir/reply` call. It generates:
+
+    - A PDF at `NirbhayaSathi/generated_firs/fir_{session_id}.pdf`
+    - A JSON record at `NirbhayaSathi/generated_firs/fir_{session_id}.json`
+
+    The response includes the FIR number, authority name, contact number, and a `download_url` pointing to `GET /fir/download/{session_id}`.
+  </Step>
+</Steps>
+
+## FIR number format
+
+Every generated FIR receives a number in the format:
+
+```
+GRP/HWH/YYYY/MMDD/HHMMSS
+```
+
+For example: `GRP/HWH/2025/1704/083022`
+
+## Language support
+
+The system supports **English**, **Hindi**, and **Bengali**. Language is selected explicitly via the `language` field in `POST /fir/start`. Auto-detection using `langdetect` is used internally for incoming messages; `deep-translator` (Google Translate) handles translation to English for LLM processing.
+
+If no language is provided, the bot responds with a language selector prompt before proceeding.
+
+## Auto-extraction
+
+The Groq LLM extracts as many fields as possible from the first message, including:
+
+- Complainant name, phone, age, gender, address
+- Incident date, time, train number, station
+- Crime type and description
+- Coach number, accused description, witnesses
+
+Fields successfully extracted are pre-filled. Only genuinely missing mandatory fields trigger follow-up questions. A regex-based heuristic extractor runs as a fallback when Groq is unavailable.
+
+## Railway complaint validation
+
+Before accepting a session, NirbhayaSathi checks that the complaint describes a railway-related incident. Messages about non-railway matters are rejected. For borderline cases, the Groq LLM classifies the complaint and determines whether it falls within scope.
+
+## Rate limiting and duplicate detection
+
+<Warning>
+  Each IP address is limited to **2 FIR sessions per day**. Exceeding this limit returns HTTP 429. Additionally, if the same IP submits an identical complaint text within 30 minutes, the request is rejected as a duplicate with HTTP 409. These limits reset at midnight.
+</Warning>
+
+## Credibility score
+
+Each completed FIR is assigned a credibility score (0–100) stored in the JSON record and shown in the police dashboard:
+
+- **+10 points** for each of the 10 scoreable fields that are filled (max 100 from fields alone)
+- **+20 points** if the crime type is a crime against women
+- **+10 points** if the description exceeds 100 characters
+
+The maximum possible score is 100 (capped).
+
+## Tracking and follow-up
+
+Completed FIRs can be tracked at [pgportal.gov.in](https://pgportal.gov.in) using the FIR number. The CPGRAMS reference is included in the `/fir/summary` response.

@@ -1,0 +1,111 @@
+---
+title: "POST /api/trains/report — submit a live crowd report"
+description: "Submit a real-time crowd level report for a train. Reports are immediately factored into the live signal (20% weight) and update the crowd badge in real time."
+---
+
+This endpoint lets passengers report the crowd level they observe on a train. Each submission is written to Neo4j as a `CrowdReport` node and immediately reflected in the live signal used when computing crowd badges. The response includes the recomputed badge so the submitting client can update its UI without making a second request.
+
+## How live reports affect crowd badges
+
+Live reports from the last 60 minutes form the third signal in the fusion formula:
+
+- **With live data:** `historical × 0.50 + trend × 0.30 + live × 0.20 + weather_bonus`
+- **Without live data:** `historical × 0.65 + trend × 0.35 + weather_bonus`
+
+A single report is enough to activate the live signal. Only the first 12 characters of `user_id` are stored, as a raw string hash, to preserve submitter anonymity.
+
+## Request
+
+**`POST /api/trains/report`**
+
+<ParamField body="train_number" type="string" required placeholder="e.g. 37811">
+  The 5-digit train number. Must match a `Train` node in Neo4j.
+</ParamField>
+
+<ParamField body="crowd_level" type="string" required placeholder="RED | YELLOW | GREEN">
+  The observed crowd level. Must be exactly one of `RED`, `YELLOW`, or `GREEN` (case-sensitive).
+</ParamField>
+
+<ParamField body="user_id" type="string" default="anonymous">
+  Optional submitter identifier. Only the first 12 characters are stored as a hash in Neo4j. Defaults to `"anonymous"` if omitted.
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  `true` when the report was written successfully.
+</ResponseField>
+
+<ResponseField name="report_id" type="string">
+  Unique identifier for this report, formatted as `KR_LIVE_{unix_timestamp}`, e.g. `KR_LIVE_1713340800`.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Confirmation message: `"Thank you! Your report is now live."`
+</ResponseField>
+
+<ResponseField name="updated_badge" type="string">
+  Recomputed crowd badge after incorporating this report: `RED`, `YELLOW`, or `GREEN`.
+</ResponseField>
+
+<ResponseField name="updated_score" type="number">
+  Recomputed fused crowd score 0–100.
+</ResponseField>
+
+<ResponseField name="live_reports" type="number">
+  Total number of live user reports for this train in the current hour bucket (including this submission).
+</ResponseField>
+
+<ResponseField name="live_breakdown" type="object">
+  Count of each crowd level among the live reports for this hour.
+  <Expandable title="properties">
+    <ResponseField name="red" type="number">Count of RED reports in the last 60 minutes.</ResponseField>
+    <ResponseField name="yellow" type="number">Count of YELLOW reports in the last 60 minutes.</ResponseField>
+    <ResponseField name="green" type="number">Count of GREEN reports in the last 60 minutes.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Errors
+
+| Status | Condition |
+|---|---|
+| `400` | `crowd_level` is not `RED`, `YELLOW`, or `GREEN` |
+| `404` | No train found in Neo4j matching `train_number` |
+| `503` | Neo4j database unavailable |
+
+<Warning>
+  Reports are stored with the current server timestamp and the current hour bucket. A report submitted at 08:59 and one submitted at 09:01 fall in different hour buckets and do not combine in the live signal.
+</Warning>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl --request POST \
+  --url http://localhost:5000/api/trains/report \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "train_number": "37811",
+    "crowd_level": "RED",
+    "user_id": "passenger_abc123"
+  }'
+```
+
+</CodeGroup>
+
+```json response
+{
+  "success": true,
+  "report_id": "KR_LIVE_1713340800",
+  "message": "Thank you! Your report is now live.",
+  "updated_badge": "RED",
+  "updated_score": 76,
+  "live_reports": 4,
+  "live_breakdown": {
+    "red": 3,
+    "yellow": 1,
+    "green": 0
+  }
+}
+```

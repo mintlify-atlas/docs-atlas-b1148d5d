@@ -1,0 +1,56 @@
+---
+title: "Portal Gateway: proxy routes and HTML endpoints"
+description: "The KolkataRail portal on port 5000 serves HTML pages and proxies /api/*, /sim/*, /fir/*, /ai/* requests to backend services with a 30-second timeout."
+---
+
+The portal server (`main.py`) runs on port 5000 and acts as the single entry point for all KolkataRail traffic. It serves static HTML pages directly and transparently proxies all API, simulation, FIR, and AI requests to the appropriate backend services — CrowdIntelligence on port 8000 and NirbhayaSathi on port 8001. Clients (browser or mobile) only ever talk to port 5000; the backend ports are internal.
+
+<Warning>
+  Both backend services must be running before you start the portal. If a backend is unreachable, the portal returns HTTP 503 with the message `"Backend at {url} is not running. Start it first."` for every proxied request.
+</Warning>
+
+## Starting the portal
+
+```bash terminal
+uvicorn main:app --host 0.0.0.0 --port 5000 --reload
+```
+
+## HTML page routes
+
+These routes serve static HTML files from the project root directory. A 404 HTML response is returned if the file does not exist on disk.
+
+| Route | File served |
+|---|---|
+| `GET /` | `portal.html` |
+| `GET /portal.html` | `portal.html` |
+| `GET /index.html` | `index.html` |
+| `GET /simulation.html` | `simulation.html` |
+| `GET /nischaysathi.html` | `nischaysathi.html` |
+| `GET /policedashboard.html` | `policedashboard.html` |
+
+## Proxy routes
+
+All proxied requests preserve the original HTTP method, query parameters, request body, and headers. The `Host` header is stripped before forwarding. Responses are passed through unchanged, including status codes and headers.
+
+| Portal route | Forwarded to | Backend service |
+|---|---|---|
+| `/api/{path}` | `http://127.0.0.1:8000/api/{path}` | CrowdIntelligence |
+| `/sim/{path}` | `http://127.0.0.1:8000/sim/{path}` | CrowdIntelligence |
+| `/fir/{path}` | `http://127.0.0.1:8001/fir/{path}` | NirbhayaSathi |
+| `/ai/{path}` | `http://127.0.0.1:8001/ai/{path}` | NirbhayaSathi |
+| `/resources` | `http://127.0.0.1:8001/resources` | NirbhayaSathi |
+| `/police-station` | `http://127.0.0.1:8001/police-station` | NirbhayaSathi |
+| `/languages` | `http://127.0.0.1:8001/languages` | NirbhayaSathi |
+
+All proxy routes accept `GET`, `POST`, `PUT`, `DELETE`, and `PATCH` methods, except `/police-station` and `/languages` which accept `GET` only, and `/resources` which accepts `GET` and `POST`.
+
+## Error handling
+
+| Condition | Status | Response body |
+|---|---|---|
+| Backend process not running | `503` | `"Backend at {url} is not running. Start it first."` |
+| HTML file missing from disk | `404` | HTML error page |
+
+<Note>
+  The proxy timeout is 30 seconds. Long-running requests (such as ML inference) that exceed this limit will result in a connection error.
+</Note>

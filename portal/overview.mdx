@@ -1,0 +1,90 @@
+---
+title: 'Portal overview: web UIs and navigation'
+description: 'A guide to all web interfaces served by the KolkataRail portal on port 5000 — from passenger crowd search to FIR filing and the police operations dashboard.'
+---
+
+The KolkataRail portal is a FastAPI application (`main.py`) that runs on **port 5000** and acts as both a static file server and a reverse proxy. Every HTML interface — passenger-facing or police-facing — is served from this single entry point, while all backend API calls are transparently forwarded to the appropriate microservice.
+
+## How the portal works
+
+<Steps>
+  <Step title="Start the portal server">
+    Run the portal from the project root:
+
+    ```bash
+    uvicorn main:app --host 0.0.0.0 --port 5000 --reload
+    ```
+
+    Once running, open `http://localhost:5000/portal.html` in a browser, or replace `localhost` with your machine's local IP to access from a phone on the same network.
+  </Step>
+
+  <Step title="Navigate to a UI">
+    The root path (`/`) redirects to `portal.html`, which is the main entry point for passengers. From there, cards link to the NischaySathi chatbot and the live simulation view. The police dashboard has its own direct URL.
+  </Step>
+
+  <Step title="API calls are proxied automatically">
+    All JavaScript in the HTML pages makes `fetch` calls that the browser sends to the portal. The portal rewrites those requests and forwards them to the correct backend service — no CORS setup or additional configuration is needed on the client side.
+  </Step>
+</Steps>
+
+## Available interfaces
+
+<Columns cols={2}>
+  <Card title="Main passenger portal" icon="train-subway" href="http://localhost:5000/portal.html">
+    **`/portal.html`** — The primary entry point for commuters. Displays three navigation cards: Crowd Intelligence (train search and crowd prediction), NischaySathi Bot (FIR chatbot), and Live Simulation. Includes a sign-in / sign-up auth modal that gates access to the NischaySathi interface. User session is stored in `localStorage`.
+  </Card>
+
+  <Card title="NischaySathi FIR chatbot" icon="robot" href="http://localhost:5000/nischaysathi.html">
+    **`/nischaysathi.html`** — A React-based conversational UI powered by Groq and RAG. Passengers describe an incident and the bot detects whether it is a complaint. If so, it presents action cards (file FIR, show rights, find nearby police, show roadmap). The FIR flow walks through structured questions, then produces a downloadable PDF and optionally sends the report to police. Supports English, Hindi, and Bengali.
+  </Card>
+
+  <Card title="Police operations dashboard" icon="shield-halved" href="http://localhost:5000/policedashboard.html">
+    **`/policedashboard.html`** — A React dashboard for GRP/RPF officers. The **Cases** tab shows a searchable, filterable table of all filed FIRs with FIR number, date/time, crime category, complainant name, priority badge (HIGH / MED / LOW), a credibility score bar, and an inline status dropdown (Active / Pending / Resolved). The **Analytics** tab displays a 7-day filing trend line chart, a crime-type distribution bar chart, a crime × time-of-day heatmap, and an hourly complaint bar chart. All data is fetched live from the NischaySathi backend on port 8001.
+  </Card>
+
+  <Card title="Live crowd simulation" icon="satellite" href="http://localhost:5000/simulation.html">
+    **`/simulation.html`** — A GPS-based crowd tracking and simulation view. Users enter a name, enable location, and the page sends GPS pings every 4 seconds to the CrowdIntelligence backend. A Leaflet map renders each connected user as a coloured dot at their reported position, nearest railway stations as indigo markers, a 9-compartment crowd grid (S1–S9, coloured SAFE / CAUTION / AVOID), a connected-users list with station and distance, and a station density bar chart. Tapping on the map sets location manually when GPS is blocked over HTTP.
+  </Card>
+
+  <Card title="Mobile launcher" icon="mobile-screen" href="http://localhost:5000/index.html">
+    **`/index.html`** — The PWA entry page and mobile shortcut target. Hosts the Crowd Intelligence tab (train route search with live crowd badges, ML insights panel, and crowdsourced report modal) and a Stats tab. This is the `start_url` in `manifest.json`, so it is the first screen users see when launching from a home-screen icon. Train search results show departure/arrival times, crowd badge (GREEN / YELLOW / RED), signal source, trend direction, and live report count.
+  </Card>
+</Columns>
+
+## Proxy routing
+
+The portal forwards requests to two backend services based on the URL prefix:
+
+| Prefix | Destination | Service |
+|---|---|---|
+| `/api/*` | `http://127.0.0.1:8000` | CrowdIntelligence |
+| `/sim/*` | `http://127.0.0.1:8000` | CrowdIntelligence (simulation) |
+| `/fir/*` | `http://127.0.0.1:8001` | NischaySathi |
+| `/ai/*` | `http://127.0.0.1:8001` | NischaySathi |
+| `/resources` | `http://127.0.0.1:8001` | NischaySathi |
+| `/police-station` | `http://127.0.0.1:8001` | NischaySathi |
+| `/languages` | `http://127.0.0.1:8001` | NischaySathi |
+
+<Warning>
+If a backend service is not running when a proxied request arrives, the portal returns HTTP 503 with a message telling you which service to start. The HTML pages themselves will still load — only the API-dependent features will fail.
+</Warning>
+
+Static assets (images, CSS, JS files in the project root) are served by a catch-all `StaticFiles` mount at `/`. This mount is registered **after** all named routes, so it never shadows the HTML file routes or the proxy routes.
+
+## PWA and mobile support
+
+`index.html` links to `manifest.json`, which configures the app as an installable Progressive Web App:
+
+- **Display mode:** `standalone` (no browser chrome once installed)
+- **Theme / background colour:** `#0f172a` / `#020617` (dark slate)
+- **Icons:** `icon-192.png` and `icon-512.png` with `maskable` purpose
+- **Home-screen shortcuts:**
+
+| Shortcut | URL | Description |
+|---|---|---|
+| File Complaint | `/index.html#nirbhoy` | Opens the FIR filing flow directly |
+| Check Crowd | `/index.html#crowd` | Opens the crowd intelligence tab |
+
+<Tip>
+On Android, visit `http://<your-ip>:5000/index.html` in Chrome and tap "Add to Home screen". The two shortcuts will appear as long-press options on the installed icon.
+</Tip>

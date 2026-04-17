@@ -1,0 +1,114 @@
+{
+  "projectType": "saas",
+  "projectName": "KolkataRail Intelligence",
+  "projectDescription": "A multi-service safety and crowd intelligence platform for Kolkata suburban trains, combining real-time crowd prediction, Neo4j-backed route search, and AI-assisted FIR complaint filing.",
+  "theme": "luma",
+  "primaryColor": "#1a56db",
+  "lightColor": "#e8f0fe",
+  "darkColor": "#0f3185",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/neo4j-setup",
+              "configuration/ai-setup"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/crowd-intelligence",
+              "features/train-search",
+              "features/fir-complaints",
+              "features/police-dashboard"
+            ]
+          },
+          {
+            "group": "Portal & UIs",
+            "pages": [
+              "portal/overview",
+              "portal/simulation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Portal Gateway",
+            "pages": [
+              "api/portal-proxy"
+            ]
+          },
+          {
+            "group": "Crowd Intelligence",
+            "pages": [
+              "api/crowd/train-search",
+              "api/crowd/train-predict",
+              "api/crowd/crowd-report",
+              "api/crowd/ml-insights",
+              "api/crowd/stations-weather"
+            ]
+          },
+          {
+            "group": "NirbhayaSathi (FIR)",
+            "pages": [
+              "api/fir/start-reply",
+              "api/fir/download-status",
+              "api/fir/ai-features",
+              "api/fir/police-endpoints"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time crowd prediction using signal fusion (historical, trend, live reports, weather)",
+    "Neo4j graph-backed train route search with via-station support",
+    "Random Forest ML model for crowd level prediction (SAFE/CAUTION/AVOID)",
+    "Conversational AI FIR complaint filing with multilingual support (English, Hindi, Bengali)",
+    "AI-assisted crime categorization and legal section recommendation using Groq LLM + RAG",
+    "Police dashboard for FIR management, analytics, and status tracking",
+    "Progressive Web App (PWA) manifest for mobile installation",
+    "Rate limiting and duplicate complaint detection for FIR submissions"
+  ],
+  "publicApiSurface": [
+    "POST /api/trains/search — search trains between stations with crowd badges",
+    "POST /api/trains/predict — predict crowd for a given travel time",
+    "POST /api/trains/report — submit a live crowd report",
+    "GET /api/trains/{train_number}/stops — get all stops for a train",
+    "GET /api/trains/ml-compare/{train_number} — 24-hour ML vs historical comparison",
+    "GET /api/stats — crowd report distribution statistics",
+    "GET /api/weather — current weather signal for Kolkata",
+    "GET /api/stations — list all stations from Neo4j",
+    "POST /fir/start — start a conversational FIR session",
+    "POST /fir/reply — continue an FIR conversation session",
+    "GET /fir/download/{session_id} — download generated FIR PDF",
+    "GET /fir/status/{session_id} — check session status",
+    "GET /fir/all — list all FIRs for police dashboard",
+    "PATCH /fir/update-status/{session_id} — update FIR status",
+    "GET /fir/analytics — FIR analytics data",
+    "POST /fir/actions — get action options for an incident",
+    "POST /fir/chat — Groq+RAG general safety chatbot",
+    "POST /ai/suggest-categories — AI complaint categorization",
+    "POST /ai/detect-train — detect train number from free text",
+    "POST /resources — get police stations, helplines, and legal info by crime type",
+    "GET /police-station — get nearest railway police station",
+    "GET /languages — list supported languages"
+  ]
+}

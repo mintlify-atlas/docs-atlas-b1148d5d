@@ -1,0 +1,126 @@
+---
+title: "Configure Groq AI for complaint processing"
+description: "How to set up Groq LLM integration for NirbhayaSathi's AI-assisted FIR filing, crime categorization, field extraction, and RAG-powered legal document chatbot."
+---
+
+NirbhayaSathi uses Groq's fast LLM inference for every AI-assisted step of the complaint pipeline: detecting the crime category from a free-text description, extracting mandatory FIR fields through a conversational loop, and answering legal questions via a RAG retrieval layer backed by local legal documents. All of these features are optional — the service degrades gracefully when no API key is present.
+
+## What Groq is used for
+
+<CardGroup cols={2}>
+  <Card title="Crime categorization" icon="shield">
+    Classifies a complaint description into the correct IPC/railway offence category to pre-fill the FIR type field.
+  </Card>
+  <Card title="FIR field extraction" icon="file-lines">
+    Parses a user's free-text complaint and extracts mandatory FIR fields (incident date, location, accused description, etc.) in one LLM call before the conversational gap-filling loop begins.
+  </Card>
+  <Card title="Conversational FIR assistant" icon="comments">
+    Identifies which mandatory fields are still missing and asks for them one at a time, keeping the interaction natural across languages (Bengali, Hindi, English).
+  </Card>
+  <Card title="RAG legal chatbot" icon="scale-balanced">
+    Answers questions about railway safety laws, passenger rights, and complaint procedures using retrieved chunks from `legal_chunks.json` as grounding context.
+  </Card>
+</CardGroup>
+
+---
+
+## Default model
+
+The model is controlled by the `GROQ_MODEL` environment variable. The default, set in `NirbhayaSathi/complaint_processor.py`, is:
+
+```python
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+```
+
+`llama-3.1-8b-instant` is fast and adequate for structured extraction tasks. If you need higher accuracy on ambiguous complaints, you can override it with a larger model (see [Overriding the model](#overriding-the-model) below).
+
+---
+
+## Getting a Groq API key
+
+<Steps>
+  <Step title="Create a Groq account">
+    Go to [console.groq.com](https://console.groq.com) and sign up for a free account.
+  </Step>
+  <Step title="Generate an API key">
+    In the Groq console, navigate to **API Keys** and create a new key. Copy the key — it is shown only once.
+  </Step>
+  <Step title="Add the key to your environment">
+    Create or update `NirbhayaSathi/.env`:
+
+    ```ini NirbhayaSathi/.env
+    GROQ_API_KEY=gsk_your-groq-api-key
+    GROQ_MODEL=llama-3.1-8b-instant
+    ```
+  </Step>
+  <Step title="Restart NirbhayaSathi">
+    ```powershell
+    cd NirbhayaSathi
+    python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    ```
+    If the key is valid, AI-assisted endpoints will be active immediately.
+  </Step>
+</Steps>
+
+<Warning>
+Never commit `GROQ_API_KEY` or any `.env` file containing secrets to version control. Add `.env` to your `.gitignore` before your first commit.
+</Warning>
+
+---
+
+## Graceful degradation
+
+NirbhayaSathi is designed to remain usable even without a Groq API key. The client is conditionally initialised:
+
+```python
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+client       = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+```
+
+<Info>
+When `client` is `None`, the complaint pipeline falls back to heuristic regex-based field extraction. The conversational FIR assistant continues to collect missing mandatory fields, crime categorization is skipped, and the final FIR PDF can still be generated with the fields collected via regex. The RAG legal chatbot will not answer questions, but static legal reference content remains available.
+</Info>
+
+| Feature | With `GROQ_API_KEY` | Without `GROQ_API_KEY` |
+|---|---|---|
+| Crime categorization | AI-powered | Unavailable |
+| FIR field extraction | LLM + structured JSON | Heuristic regex |
+| Conversational assistant | Full multi-turn LLM | Unavailable |
+| FIR PDF generation | Works | Works |
+| RAG legal chatbot | Active | Unavailable |
+
+---
+
+## RAG setup
+
+The RAG layer uses a local ChromaDB vector store built from `NirbhayaSathi/legal_chunks.json`. It does **not** require a Groq API key to build the index — embeddings are generated locally using `sentence-transformers/all-MiniLM-L6-v2`.
+
+Run the setup script once before starting the service for the first time:
+
+```powershell
+cd NirbhayaSathi
+python rag_setup.py
+```
+
+This reads `legal_chunks.json`, embeds every legal section with `all-MiniLM-L6-v2` (22 MB, runs locally), and writes the persistent ChromaDB store to `NirbhayaSathi/legal_rag_db/`. You only need to re-run this if `legal_chunks.json` is updated.
+
+<Note>
+`rag_setup.py` installs `chromadb` and `sentence-transformers` as dependencies. Add them alongside the other packages listed in the README if you have not already:
+
+```powershell
+pip install chromadb sentence-transformers
+```
+</Note>
+
+---
+
+## Overriding the model
+
+Set `GROQ_MODEL` to any model available on your Groq account. The value is passed directly to the Groq client on every inference call, so changes take effect on the next server restart.
+
+```ini NirbhayaSathi/.env
+GROQ_MODEL=llama-3.1-70b-versatile
+```
+
+Larger models improve extraction accuracy on complex, multi-incident complaints and mixed-language input (Bengali/Hindi/English), at the cost of higher latency and token usage. The default `llama-3.1-8b-instant` is a good starting point for most deployments.

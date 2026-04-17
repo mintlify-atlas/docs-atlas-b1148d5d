@@ -1,0 +1,124 @@
+---
+title: "Environment variables for KolkataRail services"
+description: "All required and optional environment variables for the CrowdIntelligence and NirbhayaSathi services, with fallback behavior when optional keys are absent."
+---
+
+Every KolkataRail service reads configuration exclusively from environment variables, loaded at startup via `python-dotenv`. Set these in a `.env` file at each service root, or export them directly in your shell before starting the servers.
+
+## Complete `.env` example
+
+```ini .env
+# ── CrowdIntelligence (port 8000) ──────────────────────────────
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-neo4j-password
+OPENWEATHERMAP_KEY=your-owm-api-key
+
+# ── NirbhayaSathi (port 8001) ──────────────────────────────────
+GROQ_API_KEY=gsk_your-groq-api-key
+GROQ_MODEL=llama-3.1-8b-instant
+```
+
+---
+
+## CrowdIntelligence service
+
+The `crowdIntelligence/` service requires a live Neo4j connection to serve crowd prediction and route data. Three variables are mandatory; the fourth is optional.
+
+<Warning>
+`NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` are **required**. The service will start but all route and crowd endpoints will fail immediately if any of these are missing or point to an unreachable instance.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="NEO4J_URI" icon="database">
+    Bolt URI for the Neo4j instance.
+
+    **Required.** No default.
+
+    Example: `bolt://localhost:7687`
+  </Card>
+  <Card title="NEO4J_USER" icon="user">
+    Neo4j authentication username.
+
+    **Required.** No default.
+
+    Example: `neo4j`
+  </Card>
+  <Card title="NEO4J_PASSWORD" icon="lock">
+    Neo4j authentication password.
+
+    **Required.** No default.
+
+    Set to the password configured during Neo4j installation.
+  </Card>
+  <Card title="OPENWEATHERMAP_KEY" icon="cloud">
+    OpenWeatherMap API key for live weather signals.
+
+    **Optional.** Defaults to an empty string.
+
+    Example: `a1b2c3d4e5f6...`
+  </Card>
+</CardGroup>
+
+<Info>
+If `OPENWEATHERMAP_KEY` is absent or empty, the weather signal is skipped entirely and the crowd risk score falls back to seasonal estimates. The three other crowd signals (historical, trend, and live reviews) continue working normally — only the additive weather bonus is lost.
+</Info>
+
+---
+
+## NirbhayaSathi service
+
+The `NirbhayaSathi/` service handles FIR complaint filing and the AI-powered safety assistant. Both of its variables are optional, allowing the service to start and serve basic endpoints without any external API credentials.
+
+<CardGroup cols={2}>
+  <Card title="GROQ_API_KEY" icon="key">
+    API key for the Groq LLM inference service.
+
+    **Optional.** Defaults to `None`.
+
+    Example: `gsk_your-groq-api-key`
+  </Card>
+  <Card title="GROQ_MODEL" icon="microchip">
+    Groq model identifier to use for all LLM calls.
+
+    **Optional.** Defaults to `llama-3.1-8b-instant`.
+
+    Example: `llama-3.1-70b-versatile`
+  </Card>
+</CardGroup>
+
+<Info>
+If `GROQ_API_KEY` is not set, `complaint_processor.py` sets the Groq client to `None` and AI-assisted features (crime categorization, FIR field extraction via LLM, and the RAG legal chatbot) become unavailable. Heuristic regex-based field extraction and PDF generation still work. See [Configure Groq AI](/configuration/ai-setup) for the full degradation details.
+</Info>
+
+---
+
+## Loading order
+
+<Steps>
+  <Step title="Create .env files">
+    Place a `.env` file inside each service directory (`crowdIntelligence/` and `NirbhayaSathi/`), or set the variables at the shell level before launching the servers. Both services call `load_dotenv()` at module import time.
+  </Step>
+  <Step title="Start NirbhayaSathi">
+    ```powershell
+    cd NirbhayaSathi
+    python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    ```
+  </Step>
+  <Step title="Start CrowdIntelligence">
+    ```powershell
+    cd crowdIntelligence
+    python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ```
+    On startup, `crowdIntelligence` pings Neo4j with `RETURN 1` and logs `✅ Neo4j connected` or a warning if the connection fails.
+  </Step>
+  <Step title="Start the root portal">
+    ```powershell
+    python -m uvicorn main:app --host 0.0.0.0 --port 5000 --reload
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+You can also use `start.bat` to launch all three servers at once on Windows — but update the hardcoded paths in that file to match your local directory structure first.
+</Tip>

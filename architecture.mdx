@@ -1,0 +1,122 @@
+---
+title: "KolkataRail system architecture and service layout"
+description: "How the KolkataRail portal, Crowd Intelligence, and NirbhayaSathi services are structured, how they connect, and the key design decisions behind each service."
+---
+
+KolkataRail Intelligence is composed of three independent FastAPI services that work together through a proxy gateway pattern. The portal (port 5000) is the single entry point for all browsers and mobile clients — it serves the HTML UI and forwards API calls to the two backend services running on ports 8000 and 8001.
+
+## Service overview
+
+```
+Browser / Mobile
+        │
+        ▼
+ Portal (port 5000)
+ ├── /api/*, /sim/*  ──────► Crowd Intelligence (port 8000)
+ ├── /fir/*, /ai/*  ──────► NirbhayaSathi (port 8001)
+ ├── /resources      ──────► NirbhayaSathi (port 8001)
+ ├── /police-station ──────► NirbhayaSathi (port 8001)
+ └── /languages      ──────► NirbhayaSathi (port 8001)
+```
+
+<Info>
+  The portal uses `httpx.AsyncClient` with a 30-second timeout for all proxy calls. If a backend is unreachable, the portal returns HTTP 503 with a message identifying which service is down.
+</Info>
+
+## Portal gateway (port 5000)
+
+The portal serves HTML files directly (`portal.html`, `index.html`, `simulation.html`, `nischaysathi.html`, `policedashboard.html`) and static assets, then proxies all dynamic API traffic to the backends.
+
+| Route prefix | Forwarded to | Purpose |
+|---|---|---|
+| `/api/*` | Crowd Intelligence (8000) | Train search and crowd prediction |
+| `/sim/*` | Crowd Intelligence (8000) | GPS simulation endpoint |
+| `/fir/*` | NirbhayaSathi (8001) | FIR session management |
+| `/ai/*` | NirbhayaSathi (8001) | AI categorization and suggestions |
+| `/resources` | NirbhayaSathi (8001) | Static safety resources |
+| `/police-station` | NirbhayaSathi (8001) | Police station lookup |
+| `/languages` | NirbhayaSathi (8001) | Supported language list |
+
+<Note>
+  The static file mount is registered last in `main.py`. All proxy routes are registered first so they take precedence over the static file handler.
+</Note>
+
+## Crowd Intelligence service (port 8000)
+
+Crowd Intelligence handles all train routing and crowd prediction. It depends on two external components: a Neo4j graph database and a pre-trained Random Forest model (`crowd_model.pkl`).
+
+### Neo4j graph database
+
+Train routes and stops are modelled as a graph in Neo4j. Trains are connected to stations via `STOPS_AT` relationships, enabling the service to resolve direct routes, reverse routes, and routes via intermediate stations using Cypher queries.
+
+### Random Forest ML model
+
+The crowd prediction model (`crowd_model.pkl`) is loaded at startup from the `crowdIntelligence/` directory. It uses label encoders for weather condition, line, station, and train number to produce a crowd level label.
+
+### Signal fusion
+
+The final crowd score is assembled from four signals:
+
+| Signal | Weight | Source |
+|---|---|---|
+| Historical | 50% | Neo4j `CrowdReport` nodes aggregated by train, day type, and hour |
+| Trend | 30% | 7-day rolling shift compared to the same time window |
+| Live | 20% | User-submitted crowd reviews from the last 1 hour |
+| Weather | Additive bonus | OpenWeatherMap API (applied on top of the base score) |
+
+<Info>
+  The weather signal is additive, not a base weight. It adds to the fused score rather than replacing any of the three base signals. The `OPENWEATHERMAP_KEY` environment variable is optional; if absent, the weather bonus is skipped.
+</Info>
+
+The fused score maps to one of three crowd levels:
+
+| Level | Label | Meaning |
+|---|---|---|
+| Low | GREEN — Safe | Train is not crowded |
+| Medium | YELLOW — Caution | Moderate crowding expected |
+| High | RED — Avoid | Train is heavily crowded |
+
+## NirbhayaSathi service (port 8001)
+
+NirbhayaSathi is the safety assistant service. It manages FIR sessions, AI-assisted complaint processing, PDF generation, and police-facing endpoints.
+
+### Conversational FIR state machine
+
+Each complaint session is managed as a state machine with a unique session ID. The core endpoints are:
+
+- `POST /fir/start` — start a new FIR session
+- `POST /fir/reply` — continue the session with the user's next message
+- `GET /fir/status` — check session state
+- `GET /fir/download/{session_id}` — download the generated FIR PDF
+
+The session collects incident details (date, location, train, description, witness information) through a guided conversation before generating the final document.
+
+### Groq LLM and RAG
+
+When `GROQ_API_KEY` is set, NirbhayaSathi uses the Groq API (defaulting to `llama-3.1-8b-instant`) for:
+
+- **AI categorization** (`/ai/suggest-categories`) — suggests complaint categories based on the incident description.
+- **Train detection** (`/ai/detect-train`) — extracts train numbers from free-text descriptions.
+- **FIR actions** (`/fir/actions`) — surfaces next-step recommendations after filing.
+
+<Warning>
+  If `GROQ_API_KEY` is not set, the AI endpoints will fail or return degraded responses. Disable AI features in the UI or provide the key before using those endpoints.
+</Warning>
+
+### PDF generation
+
+Completed FIR sessions are rendered as PDF documents and saved to `NirbhayaSathi/generated_firs/`. The directory is created automatically at startup. Generated PDFs are served as static files at `/static/firs/{session_id}.pdf`.
+
+### Multi-language support
+
+NirbhayaSathi supports English, Hindi, and Bengali using `langdetect` for language detection and `deep-translator` for translation. The service detects the user's language from their first message and continues the entire session in that language.
+
+## Data flow: a crowd prediction request
+
+1. Browser calls `GET /api/trains?from=Howrah&to=Dum+Dum` on the portal (port 5000).
+2. Portal proxies the request to Crowd Intelligence at `http://127.0.0.1:8000/api/trains?from=Howrah&to=Dum+Dum`.
+3. Crowd Intelligence queries Neo4j for matching `STOPS_AT` paths.
+4. For each result, it fetches historical scores, trend scores, and recent live reviews from Neo4j.
+5. If `OPENWEATHERMAP_KEY` is set, it fetches current weather and calculates an additive bonus.
+6. Scores are fused using the weighted formula and mapped to a crowd level label.
+7. The response (train list with crowd badges) is returned through the portal proxy to the browser.

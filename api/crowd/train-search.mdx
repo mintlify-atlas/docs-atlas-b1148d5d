@@ -1,0 +1,141 @@
+---
+title: "POST /api/trains/search — search trains with crowd badges"
+description: "Search Kolkata suburban trains between stations. Returns direct and reverse trains with fused crowd badges from historical, trend, live, and weather data."
+---
+
+This endpoint searches for Kolkata suburban trains between two stations and returns each result enriched with a real-time crowd badge. Badges are computed by fusing four signals: historical Neo4j crowd reports (50% weight), a 7-day trend (30%), live user reports from the last 60 minutes (20%), and an additive weather bonus. When historical data is thin (fewer than 4 reports), the ML model's prediction is substituted as the base score.
+
+## Request
+
+**`POST /api/trains/search`**
+
+<ParamField body="from_station" type="string" required>
+  Partial station name used for a `CONTAINS` match in the graph. For example, `"Howrah"` matches `"Howrah Jn"` and `"Howrah Junction"`.
+</ParamField>
+
+<ParamField body="to_station" type="string">
+  Destination station. When omitted, the endpoint returns all trains that stop at `from_station` regardless of direction.
+</ParamField>
+
+<ParamField body="via_station" type="string">
+  Intermediate stop for a three-station graph traversal. Requires `to_station` to also be set. Trains are returned only if they call at `from_station → via_station → to_station` in that sequence.
+</ParamField>
+
+## Search modes
+
+| Provided fields | Behaviour |
+|---|---|
+| `from_station` only | Returns all trains calling at that station (no reverse set) |
+| `from_station` + `to_station` | Returns direct trains (from→to) and reverse trains (to→from) |
+| `from_station` + `via_station` + `to_station` | Three-station traversal; reverse set is empty |
+
+<Note>
+  Results are deduplicated by train number. When a `CONTAINS` pattern matches a train at multiple stops, only the earliest departure is kept.
+</Note>
+
+## Response
+
+<ResponseField name="direct_trains" type="array">
+  Trains travelling from `from_station` toward `to_station`, sorted by departure time.
+  <Expandable title="train object properties">
+    <ResponseField name="number" type="string">Five-digit train number.</ResponseField>
+    <ResponseField name="name" type="string">Train name.</ResponseField>
+    <ResponseField name="origin" type="string">Train's terminus origin station.</ResponseField>
+    <ResponseField name="dest" type="string">Train's terminus destination station.</ResponseField>
+    <ResponseField name="depart" type="string">Departure time at `from_station` (HH:MM).</ResponseField>
+    <ResponseField name="arrive" type="string">Arrival time at `to_station` (HH:MM).</ResponseField>
+    <ResponseField name="line" type="string">Rail line identifier, e.g. `ER_MAIN`, `ER_CHORD`, `SER_MAIN`.</ResponseField>
+    <ResponseField name="type" type="string">Train type, e.g. `LOCAL`, `EXPRESS`.</ResponseField>
+    <ResponseField name="badge" type="string">Crowd badge: `RED`, `YELLOW`, or `GREEN`.</ResponseField>
+    <ResponseField name="color" type="string">Lowercase badge color for UI rendering: `red`, `yellow`, or `green`.</ResponseField>
+    <ResponseField name="score" type="number">Fused crowd score 0–100. ≥70 is RED, 40–69 is YELLOW, &lt;40 is GREEN.</ResponseField>
+    <ResponseField name="reason" type="string">Human-readable explanation of the badge, e.g. `"Avoid — very crowded at 08:00 on weekdays"`.</ResponseField>
+    <ResponseField name="trend" type="string">7-day crowd trend: `spiking`, `worsening`, `stable`, `improving`, `clear`, or `unknown`.</ResponseField>
+    <ResponseField name="live_reports" type="number">Count of user reports submitted in the last 60 minutes.</ResponseField>
+    <ResponseField name="weather_condition" type="string">Current weather signal: `clear`, `rain`, `heavy_rain`, or `fog`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="reverse_trains" type="array">
+  Trains travelling from `to_station` toward `from_station`. Empty when `via_station` is used or `to_station` is omitted. Each object has the same shape as entries in `direct_trains`.
+</ResponseField>
+
+<ResponseField name="total_direct" type="number">
+  Count of trains in `direct_trains`.
+</ResponseField>
+
+<ResponseField name="total_reverse" type="number">
+  Count of trains in `reverse_trains`.
+</ResponseField>
+
+<ResponseField name="total" type="number">
+  Sum of `total_direct` and `total_reverse`.
+</ResponseField>
+
+<ResponseField name="weather" type="object">
+  Current weather signal for Kolkata.
+  <Expandable title="properties">
+    <ResponseField name="condition" type="string">`clear`, `rain`, `heavy_rain`, or `fog`.</ResponseField>
+    <ResponseField name="score" type="number">Additive weather bonus score (0–80).</ResponseField>
+    <ResponseField name="description" type="string">Human-readable weather summary.</ResponseField>
+    <ResponseField name="temp" type="number">Temperature in °C.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="timestamp" type="string">
+  ISO 8601 timestamp of when the response was generated.
+</ResponseField>
+
+## Example
+
+<CodeGroup>
+
+```bash curl
+curl --request POST \
+  --url http://localhost:5000/api/trains/search \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "from_station": "Howrah",
+    "to_station": "Bandel"
+  }'
+```
+
+</CodeGroup>
+
+```json response
+{
+  "from_station": "Howrah",
+  "to_station": "Bandel",
+  "via_station": null,
+  "direct_trains": [
+    {
+      "number": "37811",
+      "name": "HWH-MSAE LOCAL",
+      "origin": "Howrah Jn",
+      "dest": "Masagram",
+      "depart": "06:05",
+      "arrive": "07:42",
+      "line": "ER_MAIN",
+      "type": "LOCAL",
+      "badge": "GREEN",
+      "color": "green",
+      "score": 22,
+      "reason": "Safe — comfortable at 06:00 on weekdays",
+      "trend": "stable",
+      "live_reports": 0,
+      "weather_condition": "clear"
+    }
+  ],
+  "reverse_trains": [],
+  "total_direct": 1,
+  "total_reverse": 0,
+  "total": 1,
+  "weather": {
+    "condition": "clear",
+    "score": 0,
+    "description": "Clear, 28°C — no weather impact",
+    "temp": 28
+  },
+  "timestamp": "2026-04-17T08:30:00.000000"
+}
+```

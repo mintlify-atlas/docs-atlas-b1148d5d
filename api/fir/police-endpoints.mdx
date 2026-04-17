@@ -1,0 +1,562 @@
+---
+title: "Police dashboard and FIR management endpoints"
+description: "List all filed FIRs, update complaint status, view dashboard analytics, send FIRs to police, and look up nearby stations for officers."
+---
+
+The police dashboard endpoints are designed for the officer-facing side of NirbhayaSathi. `GET /fir/all` powers the master complaint list, `PATCH /fir/update-status/{session_id}` lets officers move cases through the workflow, `GET /fir/analytics` feeds the dashboard charts, and `POST /fir/send-to-police` implements a two-step confirmation before a complainant's FIR is formally dispatched. Two discovery endpoints — `GET /police-station` and `POST /resources` — serve both the officer dashboard and the public-facing chatbot.
+
+<Warning>
+  These endpoints have no authentication layer in the current build. Deploy them behind a reverse-proxy auth gate or VPN before exposing to the internet.
+</Warning>
+
+---
+
+## GET /fir/all
+
+Returns all filed FIRs sorted newest-first, read from the JSON files written alongside each generated PDF in the `generated_firs/` directory. Returns an empty array if no FIRs have been filed yet.
+
+### Response
+
+An array of FIR summary objects. Each object contains:
+
+<ResponseField name="id" type="string" required>
+  The session UUID, used as the identifier for status-update and download operations.
+</ResponseField>
+
+<ResponseField name="fir_number" type="string" required>
+  Assigned FIR reference number (e.g. `GRP/SEA/2026/00412`). `"PENDING"` if assignment failed.
+</ResponseField>
+
+<ResponseField name="date" type="string" required>
+  Date of the incident as entered by the complainant (e.g. `"17/04/2026"`).
+</ResponseField>
+
+<ResponseField name="time" type="string" required>
+  Time range of the incident (e.g. `"8-12pm"`).
+</ResponseField>
+
+<ResponseField name="category" type="string" required>
+  Human-readable crime category, title-cased (e.g. `"Sexual Harassment"`).
+</ResponseField>
+
+<ResponseField name="victim" type="string" required>
+  Complainant name. `"Anonymous"` if not provided.
+</ResponseField>
+
+<ResponseField name="location" type="string" required>
+  Station or between-stations location of the incident.
+</ResponseField>
+
+<ResponseField name="severity" type="string" required>
+  `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Current case status: `pending`, `active`, or `resolved`.
+</ResponseField>
+
+<ResponseField name="priority" type="string" required>
+  Derived from severity: `high` (CRITICAL/HIGH), `medium` (MEDIUM), or `low` (LOW).
+</ResponseField>
+
+<ResponseField name="credibility_score" type="number" required>
+  Integer from 0 to 100. Computed from number of filled fields (+10 each), crime category (+20 for crimes against women), and description length (+10 if over 100 characters).
+</ResponseField>
+
+<ResponseField name="description" type="string" required>
+  Full incident description as provided by the complainant.
+</ResponseField>
+
+<ResponseField name="filed_timestamp" type="string" required>
+  ISO 8601 timestamp of when the FIR was completed.
+</ResponseField>
+
+<CodeGroup>
+
+```bash List all FIRs
+curl --request GET \
+  --url https://api.kolkatarail.in/fir/all
+```
+
+```json Response
+[
+  {
+    "id": "f3a1c2d4-e5b6-7890-abcd-ef1234567890",
+    "fir_number": "GRP/SEA/2026/00412",
+    "date": "17/04/2026",
+    "time": "8-12pm",
+    "category": "Sexual Harassment",
+    "victim": "Priya Sharma",
+    "location": "Sealdah",
+    "severity": "HIGH",
+    "status": "pending",
+    "priority": "high",
+    "credibility_score": 80,
+    "description": "A man groped me on the Sealdah-Bandel EMU this morning around 9am.",
+    "filed_timestamp": "2026-04-17T10:32:15.123456"
+  }
+]
+```
+
+</CodeGroup>
+
+---
+
+## PATCH /fir/update-status/{session_id}
+
+Updates the `status` field of a filed FIR. The change is persisted to the JSON file on disk and is reflected immediately in subsequent `GET /fir/all` responses.
+
+### Path parameter
+
+<ParamField path="session_id" type="string" required>
+  The session UUID (`id` field from `GET /fir/all`).
+</ParamField>
+
+### Request body
+
+<ParamField body="status" type="string" required>
+  New case status. Must be exactly one of: `active`, `pending`, or `resolved`.
+</ParamField>
+
+### Response
+
+<ResponseField name="message" type="string" required>
+  Confirmation string, e.g. `"Status updated to 'active'"`.
+</ResponseField>
+
+<ResponseField name="session_id" type="string" required>
+  Echo of the path parameter.
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  The new status value that was written.
+</ResponseField>
+
+### Error responses
+
+| HTTP status | Condition |
+|-------------|-----------|
+| `400` | `status` value is not one of `active`, `pending`, or `resolved`. |
+| `404` | No JSON file found for the given `session_id` — FIR does not exist. |
+
+<CodeGroup>
+
+```bash Mark FIR as active
+curl --request PATCH \
+  --url https://api.kolkatarail.in/fir/update-status/f3a1c2d4-e5b6-7890-abcd-ef1234567890 \
+  --header 'Content-Type: application/json' \
+  --data '{ "status": "active" }'
+```
+
+```json Response
+{
+  "message": "Status updated to 'active'",
+  "session_id": "f3a1c2d4-e5b6-7890-abcd-ef1234567890",
+  "status": "active"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /fir/analytics
+
+Returns aggregated statistics computed from all stored FIR JSON files. All data is read live from disk on each request — there is no caching layer.
+
+### Response
+
+<ResponseField name="complaints_per_hour" type="number[]" required>
+  24-element array where index 0 = midnight and index 23 = 11 PM. Each element is the count of FIRs filed in that hour within the last 24 hours.
+</ResponseField>
+
+<ResponseField name="crime_type_distribution" type="object" required>
+  Dictionary mapping title-cased crime type to complaint count across all time (e.g. `{"Sexual Harassment": 12, "Theft": 7}`).
+</ResponseField>
+
+<ResponseField name="status_counts" type="object" required>
+  Counts by case status.
+
+  <Expandable title="status_counts properties">
+    <ResponseField name="pending" type="number">Count of pending FIRs.</ResponseField>
+    <ResponseField name="active" type="number">Count of active FIRs.</ResponseField>
+    <ResponseField name="resolved" type="number">Count of resolved FIRs.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="daily_trend" type="object[]" required>
+  Array of 7 objects covering the last 7 calendar days, ordered by date ascending. Each object has:
+  - `date` — `YYYY-MM-DD` string
+  - `count` — number of FIRs filed on that day
+</ResponseField>
+
+<CodeGroup>
+
+```bash Fetch analytics
+curl --request GET \
+  --url https://api.kolkatarail.in/fir/analytics
+```
+
+```json Response
+{
+  "complaints_per_hour": [0,0,0,0,0,0,1,0,3,2,1,0,0,1,0,0,2,1,0,0,0,0,0,0],
+  "crime_type_distribution": {
+    "Sexual Harassment": 12,
+    "Theft": 7,
+    "Physical Assault": 4,
+    "Eve Teasing": 3
+  },
+  "status_counts": {
+    "pending": 18,
+    "active": 5,
+    "resolved": 3
+  },
+  "daily_trend": [
+    { "date": "2026-04-11", "count": 2 },
+    { "date": "2026-04-12", "count": 4 },
+    { "date": "2026-04-13", "count": 1 },
+    { "date": "2026-04-14", "count": 3 },
+    { "date": "2026-04-15", "count": 5 },
+    { "date": "2026-04-16", "count": 7 },
+    { "date": "2026-04-17", "count": 4 }
+  ]
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /fir/send-to-police
+
+Formally dispatches a completed FIR to the assigned police authority. Uses a two-call confirmation pattern to prevent accidental submissions: the first call returns a verification summary; the second call (with `confirmed=true`) performs the dispatch and returns a tracking reference.
+
+<Note>
+  In the current implementation the "dispatch" is logical — it generates a tracking reference and returns authority contact details. Physical transmission (email, API integration with GRP systems) is outside the scope of this service and would be handled by a downstream integration.
+</Note>
+
+### Query parameters
+
+<ParamField query="session_id" type="string" required>
+  UUID of the completed FIR session to send.
+</ParamField>
+
+<ParamField query="confirmed" type="boolean" default="false">
+  Set to `false` (or omit) for the first call to receive a verification preview. Set to `true` to confirm and trigger dispatch.
+</ParamField>
+
+### First call response (confirmed=false)
+
+<ResponseField name="status" type="string" required>
+  Always `"pending_confirmation"`.
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  Prompt string asking the user to verify the details.
+</ResponseField>
+
+<ResponseField name="verification" type="object" required>
+  Key FIR fields for the user to review before confirming: `fir_number`, `complainant_name`, `crime_type`, `incident_date`, `incident_time`, `train_number`, `station`, `authority`, `severity`.
+</ResponseField>
+
+<ResponseField name="confirm_prompt" type="string" required>
+  Human-readable confirmation question to display in the UI.
+</ResponseField>
+
+### Second call response (confirmed=true)
+
+<ResponseField name="status" type="string" required>
+  Always `"sent"`.
+</ResponseField>
+
+<ResponseField name="tracking_reference" type="string" required>
+  Unique reference in format `RM-YYYYMMDD-{8CHARS}` generated from the session ID and current timestamp.
+</ResponseField>
+
+<ResponseField name="follow_up_date" type="string" required>
+  Recommended follow-up date, 7 days from dispatch. Format: `DD/MM/YYYY`.
+</ResponseField>
+
+<ResponseField name="authority" type="string" required>
+  Name of the authority the FIR was sent to (e.g. `"Government Railway Police"`).
+</ResponseField>
+
+<ResponseField name="fir_number" type="string" required>
+  FIR reference number.
+</ResponseField>
+
+### Error responses
+
+| HTTP status | Condition |
+|-------------|-----------|
+| `400` | FIR is not yet complete, or `fir_data` not found on session. |
+| `404` | Session not found or expired. |
+
+<CodeGroup>
+
+```bash Step 1 — preview before sending
+curl --request POST \
+  --url 'https://api.kolkatarail.in/fir/send-to-police?session_id=f3a1c2d4-e5b6-7890-abcd-ef1234567890&confirmed=false'
+```
+
+```json Step 1 — verification response
+{
+  "status": "pending_confirmation",
+  "message": "⚠️ Please verify these details before sending to police:",
+  "verification": {
+    "fir_number": "GRP/SEA/2026/00412",
+    "complainant_name": "Priya Sharma",
+    "crime_type": "sexual_harassment",
+    "incident_date": "17/04/2026",
+    "incident_time": "8-12pm",
+    "train_number": "37811",
+    "station": "Sealdah",
+    "authority": "Government Railway Police",
+    "severity": "HIGH"
+  },
+  "confirm_prompt": "Are you sure you want to send this FIR to the police? This action cannot be undone."
+}
+```
+
+```bash Step 2 — confirm and send
+curl --request POST \
+  --url 'https://api.kolkatarail.in/fir/send-to-police?session_id=f3a1c2d4-e5b6-7890-abcd-ef1234567890&confirmed=true'
+```
+
+```json Step 2 — sent response
+{
+  "status": "sent",
+  "tracking_reference": "RM-20260417-A1B2C3D4",
+  "follow_up_date": "24/04/2026",
+  "authority": "Government Railway Police",
+  "fir_number": "GRP/SEA/2026/00412"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /languages
+
+Returns language configuration metadata for UI bootstrap. The frontend should call this once on load to determine whether to show the language picker before the chat interface.
+
+### Response
+
+<ResponseField name="require_language_selection" type="boolean" required>
+  Always `true`. The language picker must be displayed before the FIR session can start.
+</ResponseField>
+
+<ResponseField name="supported_languages" type="object[]" required>
+  Array of language objects. Each has:
+  - `code` — language code (`en`, `bn`, `hi`)
+  - `label` — English name (`English`, `Bengali`, `Hindi`)
+  - `native` — Name in the native script (`English`, `বাংলা`, `हिंदी`)
+</ResponseField>
+
+<ResponseField name="default" type="string" required>
+  Default language code: `"en"`.
+</ResponseField>
+
+<CodeGroup>
+
+```bash Get language options
+curl --request GET \
+  --url https://api.kolkatarail.in/languages
+```
+
+```json Response
+{
+  "require_language_selection": true,
+  "ui_hint": "fullscreen_language_selector",
+  "supported_languages": [
+    { "code": "en", "label": "English", "native": "English" },
+    { "code": "bn", "label": "Bengali", "native": "বাংলা" },
+    { "code": "hi", "label": "Hindi",   "native": "हिंदी" }
+  ],
+  "default": "en"
+}
+```
+
+</CodeGroup>
+
+---
+
+## GET /police-station
+
+Returns details for the nearest known railway police station. Useful for the "Contact Nearby Police" action card and for emergency contact display in the UI.
+
+### Query parameter
+
+<ParamField query="location" type="string">
+  Optional location string (station name or area). When provided, the lookup attempts to return the station closest to the given location. When omitted, the configured default station is returned.
+</ParamField>
+
+### Response
+
+<ResponseField name="station_name" type="string" required>
+  Name of the police station (e.g. `"GRP Sealdah"`).
+</ResponseField>
+
+<ResponseField name="address" type="string" required>
+  Full address of the station.
+</ResponseField>
+
+<ResponseField name="phone" type="string" required>
+  Primary contact phone number.
+</ResponseField>
+
+<ResponseField name="coordinates" type="object">
+  `{ "lat": float, "lng": float }` geographic coordinates, if available.
+</ResponseField>
+
+<ResponseField name="is_24x7" type="boolean" required>
+  `true` if the station operates around the clock.
+</ResponseField>
+
+<ResponseField name="services" type="string[]" required>
+  List of services offered (e.g. `["FIR registration", "Zero FIR", "Women's help desk"]`).
+</ResponseField>
+
+<ResponseField name="distance_from_platform" type="string">
+  Approximate walking distance from the nearest platform, if known (e.g. `"50m from Platform 1"`).
+</ResponseField>
+
+<CodeGroup>
+
+```bash Get nearest police station
+curl --request GET \
+  --url 'https://api.kolkatarail.in/police-station?location=Sealdah'
+```
+
+```json Response
+{
+  "station_name": "GRP Sealdah",
+  "address": "Sealdah Railway Station, Kolkata - 700014",
+  "phone": "033-23508100",
+  "coordinates": { "lat": 22.5655, "lng": 88.3697 },
+  "is_24x7": true,
+  "services": ["FIR registration", "Zero FIR", "Women's help desk", "Lost & found"],
+  "distance_from_platform": "100m from Platform 1"
+}
+```
+
+</CodeGroup>
+
+---
+
+## POST /resources
+
+Returns police contacts, emergency helplines, legal information, safety tips, and compensation details for a given crime type. Used by both the officer dashboard and the `POST /fir/actions` endpoint internally.
+
+### Request body
+
+<ParamField body="crime_type" type="string" required>
+  Crime type string (e.g. `sexual_harassment`, `theft`, `robbery`). The service normalises aliases before lookup, so `"sexual harassment"` and `"sexual_harassment"` are treated identically.
+</ParamField>
+
+<ParamField body="complaint_text" type="string">
+  Optional free-text description. When provided it is used to refine the recommended IPC sections returned in `legal_info`.
+</ParamField>
+
+<ParamField body="include_police_stations" type="boolean" default="true">
+  Include the `police_stations` and `primary_authority` arrays in the response.
+</ParamField>
+
+<ParamField body="include_helplines" type="boolean" default="true">
+  Include the `helplines` object (primary authority + women-specific helplines).
+</ParamField>
+
+<ParamField body="include_legal_info" type="boolean" default="true">
+  Include `legal_info` (rights + recommended IPC/BNS sections) and `compensation_info`.
+</ParamField>
+
+### Response
+
+<ResponseField name="crime_type" type="string" required>
+  Normalised crime type string as processed by the server.
+</ResponseField>
+
+<ResponseField name="primary_authority" type="object">
+  The main authority for this crime type with `name`, `main_number`, and other contact fields.
+</ResponseField>
+
+<ResponseField name="police_stations" type="object[]">
+  List of relevant railway police stations. Each entry has `name`, `location`, `phone`, and `coordinates`.
+</ResponseField>
+
+<ResponseField name="helplines" type="object">
+  Emergency contact numbers. Contains `primary_authority` (GRP/RPF) and `women_specific` (women's helpline info for crimes against women).
+</ResponseField>
+
+<ResponseField name="legal_info" type="object">
+  <Expandable title="legal_info properties">
+    <ResponseField name="rights" type="string[]">
+      List of the complainant's legal rights relevant to this crime type.
+    </ResponseField>
+    <ResponseField name="recommended_sections" type="string[]">
+      IPC / BNS section references (e.g. `["IPC 354A / BNS 74", "IPC 509"]`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="safety_tips" type="object">
+  Safety guidance and prevention tips relevant to the crime type.
+</ResponseField>
+
+<ResponseField name="compensation_info" type="object">
+  Compensation eligibility information under the Railways Act and grievance process details.
+</ResponseField>
+
+<CodeGroup>
+
+```bash Get resources for theft
+curl --request POST \
+  --url https://api.kolkatarail.in/resources \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "crime_type": "theft",
+    "complaint_text": "My bag was stolen from the overhead rack",
+    "include_police_stations": true,
+    "include_helplines": true,
+    "include_legal_info": true
+  }'
+```
+
+```json Response
+{
+  "crime_type": "theft",
+  "primary_authority": {
+    "name": "Government Railway Police (GRP)",
+    "main_number": "9836100333"
+  },
+  "police_stations": [
+    {
+      "name": "GRP Howrah",
+      "location": "Howrah Junction, Howrah - 711101",
+      "phone": "033-26413000",
+      "coordinates": { "lat": 22.5839, "lng": 88.3422 }
+    }
+  ],
+  "helplines": {
+    "primary_authority": { "name": "GRP", "number": "9836100333" },
+    "women_specific": null
+  },
+  "legal_info": {
+    "rights": [
+      "You have the right to file a Zero FIR at any police station regardless of jurisdiction.",
+      "You are entitled to a free copy of the FIR."
+    ],
+    "recommended_sections": ["IPC 379 / BNS 331", "Railways Act S.145"]
+  },
+  "safety_tips": {
+    "prevention": ["Keep bags in front of you", "Use luggage locks", "Avoid displaying valuables"]
+  },
+  "compensation_info": {
+    "eligible": false,
+    "note": "Compensation claims for theft require proof of value; file within 90 days."
+  }
+}
+```
+
+</CodeGroup>

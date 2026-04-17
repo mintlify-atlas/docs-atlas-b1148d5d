@@ -1,0 +1,154 @@
+---
+title: "Train search and route planning with Neo4j"
+description: "Graph-backed train search across Kolkata suburban lines with direct, reverse, and via-station traversal — every result enriched with a live crowd badge."
+---
+
+The train search API traverses a Neo4j graph of `Train`, `Station`, and `STOPS_AT` relationship nodes to find trains for a given route. Every result is enriched with a crowd badge computed by the signal-fusion engine before the response is returned. Searches support direct routes, the opposite direction, and three-station via-stop queries.
+
+## Graph model
+
+```
+(Train)-[:STOPS_AT {sequence, time}]->(Station)
+```
+
+Each `STOPS_AT` relationship carries a `sequence` integer and a departure `time` string (`HH:MM`). Sequence ordering is what determines whether a train travels from A to B or B to A.
+
+## Search endpoint
+
+```
+POST /api/trains/search
+```
+
+<ParamField body="from_station" type="string" required>
+  Origin station name. Matched with `CONTAINS` — partial names work (e.g., `"Howrah"` matches `"Howrah Jn"`).
+</ParamField>
+
+<ParamField body="to_station" type="string">
+  Destination station name. When omitted, returns all trains stopping at `from_station`.
+</ParamField>
+
+<ParamField body="via_station" type="string">
+  Intermediate station name. When provided along with `to_station`, triggers a three-station traversal.
+</ParamField>
+
+### Sample request
+
+```bash
+curl -X POST http://localhost:8000/api/trains/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from_station": "Howrah",
+    "to_station": "Burdwan"
+  }'
+```
+
+## Search modes
+
+### Direct search
+
+When both `from_station` and `to_station` are provided (and no `via_station`), the query finds all trains where the origin stop appears before the destination stop in sequence:
+
+```cypher
+MATCH (tr:Train)-[s1:STOPS_AT]->(st1:Station),
+      (tr)-[s2:STOPS_AT]->(st2:Station)
+WHERE st1.name CONTAINS $from_station
+  AND st2.name CONTAINS $to_station
+  AND s1.sequence < s2.sequence
+```
+
+### Reverse search
+
+A second query automatically runs in parallel to find trains that travel in the opposite direction — from `to_station` to `from_station`. These are flagged with `"is_reverse": true` in the response so the UI can group them separately.
+
+Reverse trains appear in the `reverse_trains` array; direct trains appear in `direct_trains`.
+
+### Via-station search
+
+When `via_station` is supplied, the query performs a three-station traversal enforcing both sequence constraints:
+
+```cypher
+MATCH (tr:Train)-[s1:STOPS_AT]->(st1:Station),
+      (tr)-[s2:STOPS_AT]->(st2:Station),
+      (tr)-[s3:STOPS_AT]->(st3:Station)
+WHERE st1.name CONTAINS $from_station
+  AND st2.name CONTAINS $via_station
+  AND st3.name CONTAINS $to_station
+  AND s1.sequence < s2.sequence
+  AND s2.sequence < s3.sequence
+```
+
+The `via_time` field in each result shows the departure time at the intermediate station. Reverse search is skipped when `via_station` is present.
+
+### Station-only search
+
+When `to_station` is omitted, the API returns all trains that stop at `from_station`, ordered by departure time. This is useful for displaying the full departure board for a station.
+
+## Deduplication
+
+Because station names are matched with `CONTAINS`, a single train can appear multiple times when a station name matches more than one node. The API deduplicates by keeping only the first (earliest-sequence) result per train number:
+
+```python
+def dedup_rows(rows):
+    seen = {}
+    for row in rows:
+        if row["number"] not in seen:
+            seen[row["number"]] = row
+    return list(seen.values())
+```
+
+## Crowd badges
+
+After deduplication, every train in both `direct_trains` and `reverse_trains` is passed through `compute_crowd_badge`. This runs all four crowd signals (historical, trend, live, weather) and appends the badge fields directly to each train object.
+
+See [crowd intelligence](/features/crowd-intelligence) for the full fusion logic.
+
+## Response structure
+
+```json
+{
+  "from_station": "Howrah",
+  "to_station": "Burdwan",
+  "via_station": null,
+  "direct_trains": [
+    {
+      "number": "37211",
+      "name": "HWH-BWN LOCAL",
+      "origin": "Howrah",
+      "dest": "Burdwan",
+      "depart": "06:10",
+      "arrive": "08:05",
+      "depart_station": "Howrah Jn",
+      "arrive_station": "Burdwan",
+      "line": "ER_MAIN",
+      "type": "LOCAL",
+      "is_reverse": false,
+      "badge": "GREEN",
+      "color": "green",
+      "score": 22,
+      "reason": "Safe — comfortable at 06:00 on weekdays",
+      "trend": "stable",
+      "live_reports": 0,
+      "weather_condition": "clear"
+    }
+  ],
+  "reverse_trains": [],
+  "total_direct": 1,
+  "total_reverse": 0,
+  "total": 1,
+  "weather": {
+    "condition": "clear",
+    "score": 0,
+    "description": "Clear, 29°C — no weather impact",
+    "temp": 29
+  },
+  "timestamp": "2025-04-17T08:30:00.000000"
+}
+```
+
+## Sorting
+
+Results within each array are sorted by departure time (ascending) after crowd badge computation. The sort key is the `depart` string in `HH:MM` format.
+
+<Tip>
+  Combine train search with the `/api/trains/{train_number}/stops` endpoint to show the full stop list for any train in the results. That endpoint returns every stop in sequence order with departure times.
+</Tip>
